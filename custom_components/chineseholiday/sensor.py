@@ -2,11 +2,9 @@
 """中国节假日传感器 - 版本 0.3.2-pre"""
 from __future__ import annotations
 
-import asyncio
 import datetime
 from datetime import timedelta
 import logging
-import threading
 from typing import Any
 
 import voluptuous as vol
@@ -19,7 +17,7 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import event as evt
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import Throttle
+from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_NAME, DOMAIN
 from . import holiday
@@ -90,6 +88,7 @@ async def async_setup_platform(
         config.get(CONF_LUNAR_ANNIVERSARY, {}),
         config.get(CONF_CALCULATE_AGE, []),
         config.get(CONF_NOTIFY_PRINCIPLES, {}),
+        cache_path=hass.config.path("chineseholiday_holidays.json"),
     )
     async_add_entities([sensor], True)
 
@@ -135,6 +134,7 @@ async def async_setup_entry(
         _entry_get(entry, "notify_principles", {}),
         unique_id=f"{DOMAIN}_sensor",
         entity_id=f"sensor.{DEFAULT_NAME}",
+        cache_path=hass.config.path("chineseholiday_holidays.json"),
     )
     async_add_entities([sensor], True)
 
@@ -147,6 +147,7 @@ class ChineseHolidaySensor(SensorEntity):
     """
 
     _attr_icon = "mdi:calendar-today"
+    _attr_should_poll = False
     # 非数值型 sensor 不设 device_class / unit_of_measurement
 
     def __init__(
@@ -163,6 +164,7 @@ class ChineseHolidaySensor(SensorEntity):
         notify_principles: dict,
         unique_id: str | None = None,
         entity_id: str | None = None,
+        cache_path: str | None = None,
     ) -> None:
         self.client_name = name
         self._attr_name = name
@@ -181,13 +183,15 @@ class ChineseHolidaySensor(SensorEntity):
         self._lunar_anniversary = lunar_anniversary
         self._calculate_age = calculate_age
         self._notify_principles = notify_principles
+        self._cache_path = cache_path
+        self._remove_update_listener = None
+        self._remove_notify_listener = None
+        self._now = dt_util.now()
+        self._last_notification_signature: tuple[str, str] | None = None
         self.entity_id = entity_id or generate_entity_id(
             "sensor.{}", self.client_name, hass=self._hass
         )
-        # Throttle 仍然可用（HA dev 分支确认）
-        self.update = Throttle(interval)(self._update)
-        self._setup_update_listener()
-        self._setup_notify_listener()
+        # Timers are registered in async_added_to_hass and removed on unload.
 
     @property
     def name(self) -> str:
@@ -213,14 +217,18 @@ class ChineseHolidaySensor(SensorEntity):
         @callback
         def _listener(_):
             self._setup_update_listener()
-            self._hass.async_add_executor_job(self._update)
+            self._hass.async_create_task(self.async_request_update())
 
-        now = datetime.datetime.utcnow() + timedelta(hours=8)
+        now = dt_util.now()
         next_midnight = (
-            datetime.datetime.strptime(now.strftime("%Y-%m-%d"), "%Y-%m-%d")
+            now.replace(hour=0, minute=0, second=0, microsecond=0)
             + timedelta(days=1, seconds=15)
         )
-        evt.async_track_point_in_time(self._hass, _listener, next_midnight)
+        if self._remove_update_listener:
+            self._remove_update_listener()
+        self._remove_update_listener = evt.async_track_point_in_time(
+            self._hass, _listener, next_midnight
+        )
 
     # ------------------------------------------------------------------
     # 定时器：按配置时间触发通知脚本
@@ -230,46 +238,66 @@ class ChineseHolidaySensor(SensorEntity):
         @callback
         def _listener(_):
             self._setup_notify_listener()
-            # notify() 包含阻塞操作，放入线程执行
-            threading.Thread(target=self.notify, daemon=True).start()
+            self._hass.async_create_task(self.async_notify())
 
-        now = datetime.datetime.utcnow() + timedelta(hours=8)
+        now = dt_util.now()
         notify_dates = []
-        for t in self._notify_times:
-            dt_str = now.strftime("%Y-%m-%d") + " " + str(t)
-            notify_dates.append(
-                datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-            )
+        for t in sorted(self._notify_times):
+            notify_dates.append(now.replace(
+                hour=t.hour, minute=t.minute, second=t.second, microsecond=0
+            ))
 
+        if not notify_dates:
+            return
         notify_d = next((d for d in notify_dates if d > now), None)
         if not notify_d:
             notify_d = notify_dates[0] + timedelta(days=1)
 
-        evt.async_track_point_in_time(self._hass, _listener, notify_d)
+        if self._remove_notify_listener:
+            self._remove_notify_listener()
+        self._remove_notify_listener = evt.async_track_point_in_time(
+            self._hass, _listener, notify_d
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Register timers only after HA owns the entity."""
+        await super().async_added_to_hass()
+        self._setup_update_listener()
+        self._setup_notify_listener()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel timers when the entity is unloaded or reloaded."""
+        if self._remove_update_listener:
+            self._remove_update_listener()
+            self._remove_update_listener = None
+        if self._remove_notify_listener:
+            self._remove_notify_listener()
+            self._remove_notify_listener = None
+        await super().async_will_remove_from_hass()
+
+    async def async_request_update(self) -> None:
+        """Run the blocking legacy calculator outside HA's event loop."""
+        await self._hass.async_add_executor_job(self._update)
+        self.async_write_ha_state()
+
+    async def async_update(self) -> None:
+        """Refresh the entity using HA's async entity contract."""
+        await self.async_request_update()
 
     # ------------------------------------------------------------------
     # 通知脚本
     # ------------------------------------------------------------------
 
-    def notify(self) -> None:
-        """调用 HA 脚本发送节日提醒（在线程中运行）。"""
-
-        def _call_script(message: str) -> None:
-            # 从非 async 线程调用 HA 服务需要用 run_coroutine_threadsafe
-            asyncio.run_coroutine_threadsafe(
-                self._hass.services.async_call(
-                    "script", self._script_name, {"message": message}
-                ),
-                self._hass.loop,
-            ).result(timeout=10)
-
+    async def async_notify(self) -> None:
+        """调用 HA 脚本发送节日提醒。"""
+        self._now = dt_util.now()
         if not self._script_name or not self._notify_principles:
             return
         if self._lunar is None:
             _LOGGER.warning("notify: _lunar 尚未初始化，跳过本次通知")
             return
 
-        dates = self._dates_need_to_notify()
+        dates = await self._hass.async_add_executor_job(self._dates_need_to_notify)
         messages = []
         for item in dates:
             days = item["day"]
@@ -281,13 +309,26 @@ class ChineseHolidaySensor(SensorEntity):
                     "距离 " + ",".join(fes_list) + "还有" + str(days) + "天"
                 )
         if messages:
+            message = ",".join(messages)
+            signature = (self._now.date().isoformat(), message)
+            if signature == self._last_notification_signature:
+                _LOGGER.debug("跳过重复节日通知：%s", message)
+                return
             try:
-                _call_script(",".join(messages))
+                await self._hass.services.async_call(
+                    "script", self._script_name, {"message": message}
+                )
+                self._last_notification_signature = signature
             except Exception as e:
                 _LOGGER.error("notify: 调用脚本失败: %s", e)
 
+    def notify(self) -> None:
+        """Compatibility wrapper for callers of the old synchronous method."""
+        self._hass.async_create_task(self.async_notify())
+
     def _dates_need_to_notify(self) -> list[dict]:
         dates = []
+        current_year = self._lunar.solar()[0]
         for key, value in self._notify_principles.items():
             days_keys = key.split("|")
             for item in value:
@@ -301,7 +342,7 @@ class ChineseHolidaySensor(SensorEntity):
                     try:
                         fes_list = [name]
                         date_str = (
-                            str(self._lunar.solar()[0])
+                            str(current_year)
                             + lunar.Festival._weekday_festival_reserse[name]
                         )
                         fes_date = datetime.datetime.strptime(
@@ -310,27 +351,33 @@ class ChineseHolidaySensor(SensorEntity):
                     except Exception:
                         pass
                 elif date:
-                    if solar:
-                        date_str = str(self._lunar.solar()[0]) + date
-                        fes_date = datetime.datetime.strptime(
-                            date_str, "%Y%m%d"
-                        ).date()
-                        fes_list = list(
-                            lunar.Festival._solar_festival.get(date, [])
-                        )
-                        fes_list += self._solar_anniversary.get(date, [])
-                    else:
-                        month, day = int(date[:2]), int(date[2:])
-                        fes_date = lunar.CalendarToday.lunar_to_solar(
-                            self._lunar.solar()[0], month, day
-                        )
-                        fes_list = list(
-                            lunar.Festival._lunar_festival.get(date, [])
-                        )
-                        fes_list += self._lunar_anniversary.get(date, [])
+                    try:
+                        date_key = str(date)
+                        lookup_key = date_key[-4:]
+                        if solar:
+                            year = int(date_key[:4]) if len(date_key) == 8 else current_year
+                            date_str = str(year) + lookup_key
+                            fes_date = datetime.datetime.strptime(date_str, "%Y%m%d").date()
+                            anniversary_names = self._solar_anniversary.get(date_key, [])
+                            if len(date_key) == 8 and not anniversary_names:
+                                anniversary_names = self._solar_anniversary.get(lookup_key, [])
+                            fes_list = list(lunar.Festival._solar_festival.get(lookup_key, []))
+                            fes_list += anniversary_names
+                        else:
+                            year = int(date_key[:4]) if len(date_key) == 8 else current_year
+                            month, day = int(lookup_key[:2]), int(lookup_key[2:])
+                            fes_date = lunar.CalendarToday.lunar_to_solar(year, month, day)
+                            fes_list = list(lunar.Festival._lunar_festival.get(lookup_key, []))
+                            anniversary_names = self._lunar_anniversary.get(date_key, [])
+                            if len(date_key) == 8 and not anniversary_names:
+                                anniversary_names = self._lunar_anniversary.get(lookup_key, [])
+                            fes_list += anniversary_names
+                    except (TypeError, ValueError):
+                        _LOGGER.warning("忽略无效通知日期：%s", date)
+                        continue
 
                 if fes_date and fes_list:
-                    today = datetime.date.today()
+                    today = self._now.date()
                     diff = (fes_date - today).days
                     if str(diff) in days_keys:
                         dates.append({**item, "day": diff, "list": fes_list})
@@ -349,6 +396,8 @@ class ChineseHolidaySensor(SensorEntity):
 
     def calculate_anniversary(self, count: int = 1) -> list[tuple]:
         anniversaries: dict[str, list] = {}
+        current_solar_year = self._lunar.solar()[0]
+        current_lunar_year, current_lunar_month, current_lunar_day = self._lunar.lunar()
 
         for key, value in self._lunar_anniversary.items():
             if len(key) == 8:
@@ -359,14 +408,13 @@ class ChineseHolidaySensor(SensorEntity):
             else:
                 month, day = int(key[:2]), int(key[2:])
                 age = -1
-            y = self._lunar.lunar()[0]
-            if month < self._lunar.lunar()[1]:
+            y = current_lunar_year
+            if month < current_lunar_month:
                 y += 1
-            elif month == self._lunar.lunar()[1] and day < self._lunar.lunar()[2]:
+            elif month == current_lunar_month and day < current_lunar_day:
                 y += 1
             solar_date = lunar.CalendarToday.lunar_to_solar(y, month, day)
             date_str = solar_date.strftime("%Y%m%d")
-            self._lunar = lunar.CalendarToday()
             anniversaries.setdefault(date_str, []).append(
                 {"anniversary": self._anniversary_label(value, age), "solar": False}
             )
@@ -378,12 +426,12 @@ class ChineseHolidaySensor(SensorEntity):
                 age = lunar.CalendarToday.get_age_by_birth_solar(year, month, day) + 1
             else:
                 age = -1
-            date_str = str(self._lunar.solar()[0]) + key
+            date_str = str(current_solar_year) + key
             anniversaries.setdefault(date_str, []).append(
                 {"anniversary": self._anniversary_label(value, age), "solar": True}
             )
 
-        today = datetime.date.today()
+        today = self._now.date()
         results = []
         for key, annis in sorted(anniversaries.items()):
             last_update = datetime.datetime.strptime(key, "%Y%m%d").date()
@@ -404,7 +452,7 @@ class ChineseHolidaySensor(SensorEntity):
     def calculate_age(self) -> None:
         if not self._calculate_age:
             return
-        now_day = datetime.datetime.now()
+        now_day = self._now.replace(tzinfo=None)
         past_dates = []
         future_dates = []
         past_count = 0
@@ -452,7 +500,7 @@ class ChineseHolidaySensor(SensorEntity):
         self.attributes["future_dates"] = future_dates
 
     def nearest_holiday(self) -> dict:
-        now_day = self._holiday.today().date() if self._holiday is not None else datetime.date.today()
+        now_day = self._now.date()
         results = self._holiday.getHoliday()
         count_dict = {k: (k - now_day).days for k in results if (k - now_day).days > 0}
         if not count_dict:
@@ -471,15 +519,16 @@ class ChineseHolidaySensor(SensorEntity):
     def _update(self) -> None:
         """在 executor 线程中运行，允许阻塞 I/O。"""
         _LOGGER.info("chineseholiday: updating...")
+        self._now = dt_util.now()
         self.attributes = {}
         self.localizedAttributes = {}
         # 懒加载：第一次 update 时初始化（此时已在 executor 线程，可以做阻塞 I/O）
         if self._holiday is None:
-            self._holiday = holiday.Holiday()
+            self._holiday = holiday.Holiday(self._cache_path)
         if self._lunar is None:
-            self._lunar = lunar.CalendarToday()
+            self._lunar = lunar.CalendarToday(self._now.replace(tzinfo=None))
         else:
-            self._lunar = lunar.CalendarToday()  # 每次更新重新计算当日
+            self._lunar = lunar.CalendarToday(self._now.replace(tzinfo=None))
 
         # HA 2024+ SensorEntity：必须写 _attr_native_value，不能覆盖 state 属性
         self._attr_native_value = self._holiday.is_holiday_today()

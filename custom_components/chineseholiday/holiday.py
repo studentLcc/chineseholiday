@@ -2,11 +2,12 @@
 # coding=utf-8
 """
 节假日模块：从 API 获取并缓存节假日状态
-数据源：http://tool.bitefu.net/jiari/ (主) / 本地 JSON 缓存 (备)
+数据源：https://tool.bitefu.net/jiari/ (主) / 本地 JSON 缓存 (备)
 """
 from __future__ import annotations
 
 import datetime
+import copy
 from datetime import datetime as datetime_class
 from datetime import timedelta
 import json
@@ -16,6 +17,7 @@ import re
 import time
 
 import requests
+from homeassistant.util import dt as dt_util
 
 from . import lunar
 
@@ -33,21 +35,26 @@ holiday_status_json_path = (
 class Holiday:
     """节假日查询与缓存。
 
-    主数据源：http://tool.bitefu.net/jiari/
+    主数据源：https://tool.bitefu.net/jiari/
       - 返回格式 {"YYYYMM": {"MMDD": {"type": "0/1/2", "week2": "1-7", ...}}}
       - type 0=工作日 1=休息日 2=法定节假日
     本地缓存：holiday.json（同目录）
     """
 
-    _BITEFU_API = "http://tool.bitefu.net/jiari/"
+    _BITEFU_API = "https://tool.bitefu.net/jiari/"
     _REQUEST_TIMEOUT = 10
     _CACHE_TTL_DAYS = 15  # 超过 N 天重新从服务器拉取
 
-    def __init__(self):
+    def __init__(self, cache_path: str | None = None):
         # __init__ 完全不做 I/O，所有磁盘/网络操作延迟到 _update() 线程中执行
         # 原因：async_setup_entry 在事件循环主线程运行，阻塞 I/O 会被 HA 2024+ 检测并报错
         self._holiday_json: dict = {}
         self._session: requests.Session | None = None
+        # Do not write mutable data into the installed custom component.  HA can
+        # replace that directory during an update.  The caller normally passes a
+        # path under the HA configuration directory; the module path remains a compatibility
+        # fallback for direct standalone use.
+        self._cache_path = cache_path or holiday_status_json_path
 
     def _ensure_session(self) -> requests.Session:
         if self._session is None:
@@ -63,8 +70,12 @@ class Holiday:
 
     @classmethod
     def day(cls, n: int) -> datetime_class:
-        """返回 UTC+8 当天 + n 天的 datetime。"""
-        return datetime_class.utcnow() + timedelta(hours=8) + timedelta(hours=n * 24)
+        """Return local Home Assistant time plus ``n`` days.
+
+        HA may run outside China, so a hard-coded UTC+8 offset is incorrect.
+        ``dt_util.now`` uses the configured HA timezone.
+        """
+        return (dt_util.now() + timedelta(days=n)).replace(tzinfo=None)
 
     @classmethod
     def today(cls) -> datetime_class:
@@ -79,16 +90,27 @@ class Holiday:
     # ------------------------------------------------------------------
 
     def get_holidays_from_disk(self):
-        try:
-            with open(holiday_status_json_path, "r") as f:
-                self._holiday_json = json.load(f)
-        except Exception as e:
-            _LOGGER.debug("get_holidays_from_disk: %s", e)
+        for path in (self._cache_path, holiday_status_json_path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    self._holiday_json = loaded
+                    return
+            except Exception as e:
+                _LOGGER.debug("get_holidays_from_disk(%s): %s", path, e)
 
     def _write_cache(self, data: dict):
         try:
-            with open(holiday_status_json_path, "w") as f:
+            cache_dir = os.path.dirname(self._cache_path)
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+            temp_path = f"{self._cache_path}.tmp"
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self._cache_path)
         except Exception as e:
             _LOGGER.error("写入节假日缓存失败: %s", e)
 
@@ -101,11 +123,14 @@ class Holiday:
         data: dict = {}
         update_date = "2000-01-01"
 
-        try:
-            with open(holiday_status_json_path, "r") as f:
-                data = json.load(f)
-        except Exception:
-            pass
+        for path in (self._cache_path, holiday_status_json_path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    break
+            except Exception:
+                continue
 
         if data and "update_time" in data:
             update_date = data["update_time"]
@@ -120,7 +145,11 @@ class Holiday:
             return
 
         _LOGGER.info("get_holidays_from_server: 开始从服务器拉取节假日数据...")
-        data = {"update_time": today_str}
+        # Keep the last known good data if the network is unavailable.  Only
+        # replace the update marker after at least one month was fetched.
+        new_data = copy.deepcopy(data) if isinstance(data, dict) else {}
+        new_data.setdefault("update_time", update_date)
+        fetched = False
 
         for i in range(6):
             month = today.month + i
@@ -128,17 +157,21 @@ class Holiday:
             if month > 12:
                 year += 1
                 month -= 12
-            data.setdefault(str(year), {})
             try:
-                self._fetch_one_month(year, month, data[str(year)])
+                year_dict = new_data.setdefault(str(year), {})
+                fetched = self._fetch_one_month(year, month, year_dict) or fetched
                 time.sleep(0.5)
             except Exception as e:
                 _LOGGER.warning(
                     "get_holidays_from_server: %d-%02d 拉取失败: %s", year, month, e
                 )
 
-        self._write_cache(data)
-        self._holiday_json = data
+        if fetched:
+            new_data["update_time"] = today_str
+            self._write_cache(new_data)
+            self._holiday_json = new_data
+        else:
+            _LOGGER.warning("get_holidays_from_server: 所有月份拉取失败，继续使用旧缓存")
 
     def _fetch_one_month(self, year: int, month: int, year_dict: dict):
         """拉取单月节假日数据并写入 year_dict。"""
@@ -152,11 +185,11 @@ class Holiday:
             result = resp.json()
         except Exception as e:
             _LOGGER.warning("_fetch_one_month %s: %s", d, e)
-            return
+            return False
 
         if d not in result:
             _LOGGER.warning("_fetch_one_month: 响应中无 %s 数据", d)
-            return
+            return False
 
         for key, info in result[d].items():
             t = int(info.get("type", 0))
@@ -164,6 +197,7 @@ class Holiday:
             # 节假日(1/2)或本应为周末却被调为工作日的(0)都记录
             if t in (1, 2) or (w in (6, 7) and t == 0):
                 year_dict[key] = str(t)
+        return True
 
     # ------------------------------------------------------------------
     # 节假日状态查询

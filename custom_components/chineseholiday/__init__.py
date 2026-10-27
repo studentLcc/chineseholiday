@@ -15,8 +15,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Chinese Holiday from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = entry.data
+    # Keep per-entry runtime state on the ConfigEntry, as recommended by
+    # current Home Assistant integrations.  The platform receives the entry
+    # itself and therefore does not need a second mutable hass.data registry.
+    entry.runtime_data = dict(entry.data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_update_options))
     return True
@@ -25,8 +27,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
 
 

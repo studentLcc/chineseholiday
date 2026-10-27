@@ -10,7 +10,7 @@
 
 推荐使用 HACS：
 
-1. 在 HACS 中添加自定义仓库：`https://github.com/Crazysiri/chineseholiday`
+1. 在 HACS 中添加自定义仓库：`https://github.com/studentLcc/chineseholiday`
 2. 搜索并安装 `中国节假日日历`
 3. 重启 Home Assistant
 
@@ -79,6 +79,13 @@ entity: sensor.chinese_holiday
 - `calculate_age` 精确显示已经过去/还有多久
 - `notify_principles` + `notify_script_name` 节日提醒
 - UI 配置流，同时保留 YAML 向后兼容
+
+## 0.4.0 改造说明
+
+- 使用 Home Assistant 配置的时区，不再固定假设 UTC+8
+- 节假日缓存写入 Home Assistant 配置目录，更新失败时保留上一次有效数据
+- 传感器定时器会在实体卸载时正确注销，避免重载后重复通知
+- 阻塞的节假日和农历计算放到执行器线程，通知脚本使用 Home Assistant 异步服务调用
 
 ## 配置示例
 

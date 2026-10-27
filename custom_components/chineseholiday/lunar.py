@@ -91,9 +91,6 @@ class LunarDate(object):
         year = 1900 + idx
 
         yearInfo = Info.yearInfos[idx]
-        print('yearInfo')
-        print(year)
-        print(idx)
         month, day, isLeapMonth = _calcMonthDay(yearInfo, offset)
         return LunarDate(year, month, day, isLeapMonth)
 
@@ -238,6 +235,10 @@ class Festival():
     _weekday_festival_reserse = {} #这个字典用来记录 用节日名字做为key 实际日期做为value的 数据
 
     _solar_term = {}
+    _terms_year = None
+    _weekday_festival_year = None
+    _dynamic_weekday_dates = set()
+    _dynamic_term_dates = set()
 
     # _winter_solstice = {}
     #
@@ -254,13 +255,17 @@ class Festival():
         return festival_handle(Festival._solar_festival,solar_month,solar_day)
 
     @classmethod
-    def _create_weekday_festival(cls):
+    def _create_weekday_festival(cls, year=None):
 
-        if cls._is_create_weekday:
+        year = year or datetime.date.today().year
+        if cls._is_create_weekday and cls._weekday_festival_year == year:
             return
+        for date_key in cls._dynamic_weekday_dates:
+            cls._solar_festival.pop(date_key, None)
+        cls._dynamic_weekday_dates.clear()
+        cls._weekday_festival_reserse.clear()
         cls._is_create_weekday = True
-
-        year = datetime.date.today().year
+        cls._weekday_festival_year = year
 
         for key,value in cls._weekday_festival.items():
             month = int(key[:2])
@@ -276,17 +281,26 @@ class Festival():
             for k in value:
                 cls._weekday_festival_reserse[k] = date_str
             cls._solar_festival[date_str] = value
+            cls._dynamic_weekday_dates.add(date_str)
 
     @classmethod
-    def _create_terms(cls):
+    def _create_terms(cls, year=None):
         #计算节气 并且 把清明节放入节日中，获取夏至和冬至
-        if not Festival._solar_term:
-            terms = jieqi().creat_year_jieqi(datetime.date.today().year)
-            for item in terms:
-                comps = item['time'].split('-')
-                if item['name'] == '清明':
-                    Festival._solar_festival[comps[1]+comps[2]] = ['清明节']
-                Festival._solar_term[comps[1]+comps[2]] = [item['name']]
+        year = year or datetime.date.today().year
+        if Festival._terms_year == year:
+            return
+        for date_key in Festival._dynamic_term_dates:
+            Festival._solar_festival.pop(date_key, None)
+        Festival._dynamic_term_dates.clear()
+        Festival._solar_term = {}
+        Festival._terms_year = year
+        terms = jieqi().creat_year_jieqi(year)
+        for item in terms:
+            comps = item['time'].split('-')
+            if item['name'] == '清明':
+                Festival._solar_festival[comps[1]+comps[2]] = ['清明节']
+                Festival._dynamic_term_dates.add(comps[1]+comps[2])
+            Festival._solar_term[comps[1]+comps[2]] = [item['name']]
     #24节气
     @classmethod
     def solar_Term(cls,solar_month, solar_day):
@@ -374,14 +388,13 @@ class Info():
 
 class SolarDate():
 
-    def __init__(self):
+    def __init__(self, now: datetime.datetime | None = None):
         global solar_year
         global solar_month
         global solar_day
         global solar_weekday
 
-        t = datetime.datetime.utcnow() + timedelta(hours=8)
-        #time.localtime()
+        t = now or datetime.datetime.now().astimezone().replace(tzinfo=None)
         solar_year      = t.year
         solar_month     = t.month
         solar_day       = t.day
@@ -399,9 +412,11 @@ class CalendarToday:
 
     _solar = None
     _lunar = None
-    def __init__(self):
-        _solar = SolarDate()
+    def __init__(self, now: datetime.datetime | None = None):
+        _solar = SolarDate(now)
         _lunar = LunarDate.fromSolarDate(solar_year,solar_month,solar_day)
+        Festival._create_terms(solar_year)
+        Festival._create_weekday_festival(solar_year)
 
     def _solar_festival(self):
         #公历节日
