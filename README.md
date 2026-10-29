@@ -88,6 +88,10 @@ entity: sensor.chinese_holiday
 - 使用 Home Assistant 配置的时区，缓存写入配置目录，失败时保留旧数据
 - 配置流文件 `config_flow.py`、节假日模块 `holiday.py` 和农历模块 `lunar.py` 都位于 `custom_components/chineseholiday/`
 
+## 0.6.1 下一节日兜底
+
+当远程接口尚未提供下一年度安排时，传感器会按法定日期计算元旦、春节、清明、劳动节、端午、中秋和国庆的基础日期，供“最近的节日”倒计时和当天状态使用。接口返回的正式调休/节假日数据优先；兜底日期不猜测额外调休安排。
+
 ## 0.6.0 手动拉取节假日
 
 集成平时按 15 天缓存节假日。需要马上更新时，调用动作 `chineseholiday.get`。它会重新请求节假日接口并刷新传感器。
@@ -221,6 +225,7 @@ test:
 
 ## 版本说明
 
+- `0.6.1`：接口缺少下一年度安排时，按法定日期兜底计算下一节日与状态
 - `0.6.0`：新增 `chineseholiday.get` 动作，可手动拉取节假日；卡片纪念日与后端节假日分离
 - `0.5.0`：改用 DataUpdateCoordinator 和 aiohttp，适配当前 Home Assistant
 - `0.3.2-pre`：增加最近多次节假日结构化放假详情，继续完善 UI 配置流与新版 Home Assistant / HACS 适配

@@ -227,7 +227,11 @@ class Holiday:
         y_str = str(date.year)
         h_dict = self._holiday_json.get(y_str, {})
         key = f"{date.month:02d}{date.day:02d}"
-
+        # 法定节日的日期固定，但下一年度的调休安排可能尚未发布；
+        # 远端接口此时可能把日期暂时标成普通工作日或休息日。
+        holiday_date = date.date() if isinstance(date, datetime.datetime) else date
+        if holiday_date in self._known_holiday_dates({date.year}):
+            return 2
         if key in h_dict:
             return int(h_dict[key])
         # 没有特殊标注：周末=休息日，工作日=工作日
@@ -501,23 +505,97 @@ class Holiday:
     # getHoliday：兼容旧接口，返回 {date: 节日名} 字典
     # ------------------------------------------------------------------
 
+    _KNOWN_SOLAR_HOLIDAYS = {
+        "0101": "元旦",
+        "0501": "劳动节",
+        "0502": "劳动节",
+        "1001": "国庆节",
+        "1002": "国庆节",
+        "1003": "国庆节",
+    }
+    _KNOWN_LUNAR_HOLIDAYS = {
+        "0101": "春节",
+        "0505": "端午节",
+        "0815": "中秋节",
+    }
+
+    def _known_holiday_dates(self, years: set[int]) -> dict:
+        """Return statutory holiday dates when next year's official notice is absent.
+
+        The public API only marks announced days as ``type=2``. Around the end
+        of a year it can therefore return January 1 as an ordinary workday
+        until the State Council publishes the next year's arrangement. These
+        dates are calendar holidays, while API data still wins when available.
+        """
+        results: dict = {}
+        for year in years:
+            for mmdd, name in self._KNOWN_SOLAR_HOLIDAYS.items():
+                try:
+                    date = datetime_class.strptime(f"{year}{mmdd}", "%Y%m%d").date()
+                    results[date] = name
+                except ValueError:
+                    continue
+
+            # 春节法定假期从除夕到正月初三；以正月初一换算，再
+            # 向前一天、向后两天生成基础法定日期，不推测额外调休。
+            try:
+                lunar_new_year = lunar.CalendarToday.lunar_to_solar(year, 1, 1)
+                for offset in range(-1, 3):
+                    results[lunar_new_year + timedelta(days=offset)] = "春节"
+            except (TypeError, ValueError):
+                _LOGGER.debug("无法换算 %s 年春节", year)
+
+            for mmdd, name in self._KNOWN_LUNAR_HOLIDAYS.items():
+                if mmdd == "0101":
+                    continue
+                try:
+                    month, day = int(mmdd[:2]), int(mmdd[2:])
+                    date = lunar.CalendarToday.lunar_to_solar(year, month, day)
+                    results[date] = name
+                except (TypeError, ValueError):
+                    _LOGGER.debug("无法换算农历节日 %s-%s", year, mmdd)
+
+            # 清明是节气，不是固定公历日；使用现有节气计算器。
+            try:
+                for item in lunar.jieqi().creat_year_jieqi(year):
+                    if item.get("name") != "清明":
+                        continue
+                    date = datetime_class.strptime(item["time"], "%Y-%m-%d").date()
+                    results[date] = "清明节"
+                    break
+            except (TypeError, ValueError, IndexError):
+                _LOGGER.debug("无法计算 %s 年清明节", year)
+        return results
+
     def getHoliday(self, days: int = 1) -> dict:
         """返回 {datetime.date: 节日名称} 字典（用于寻找最近节日）。"""
         if not self._holiday_json:
             self.get_holidays_from_disk()
+
         results = {}
+        years: set[int] = set()
+        today = self.today()
+        years.update({today.year, today.year + 1})
         for y, dates in self._holiday_json.items():
-            if y == "update_time":
+            if y == "update_time" or not str(y).isdigit():
+                continue
+            try:
+                years.add(int(y))
+            except (TypeError, ValueError):
                 continue
             for m, t in dates.items():
-                if int(t) == 2:
-                    d_str = "{}-{}-{}".format(y, m[0:2], m[2:])
-                    try:
-                        d = datetime_class.strptime(d_str, "%Y-%m-%d").date()
-                        # 节日名称从 lunar 模块推断，这里简单用日期字符串
-                        results[d] = self._resolve_holiday_name(y, m)
-                    except Exception:
-                        pass
+                if int(t) != 2:
+                    continue
+                d_str = "{}-{}-{}".format(y, m[0:2], m[2:])
+                try:
+                    d = datetime_class.strptime(d_str, "%Y-%m-%d").date()
+                    results[d] = self._resolve_holiday_name(y, m)
+                except (TypeError, ValueError):
+                    continue
+
+        # Fill only missing dates. Official API records remain authoritative.
+        for date, name in self._known_holiday_dates(years).items():
+            results.setdefault(date, name)
         return results
 
     def _resolve_holiday_name(self, year: str, mmdd: str) -> str:
