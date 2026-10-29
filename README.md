@@ -45,7 +45,7 @@ UI 中显示的是中文字段名，底层仍然对应原来的 YAML 键：
 
 ### 3. 接入前端卡片
 
-配合前端卡片使用效果最好：<https://github.com/Crazysiri/chineseholiday_card>
+配合前端卡片使用效果最好：<https://github.com/studentLcc/chineseholiday_card>
 
 新版推荐流程是先完成后端集成，再把卡片绑定到实体：
 
