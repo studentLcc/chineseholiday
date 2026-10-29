@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
+from .coordinator import ChineseHolidayCoordinator
 from .const import DOMAIN, PLATFORMS
 
 
@@ -15,10 +16,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Chinese Holiday from a config entry."""
-    # Keep per-entry runtime state on the ConfigEntry, as recommended by
-    # current Home Assistant integrations.  The platform receives the entry
-    # itself and therefore does not need a second mutable hass.data registry.
-    entry.runtime_data = dict(entry.data)
+    coordinator = ChineseHolidayCoordinator.from_config_entry(hass, entry)
+    await coordinator.async_config_entry_first_refresh()
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_update_options))
     return True

@@ -80,12 +80,12 @@ entity: sensor.chinese_holiday
 - `notify_principles` + `notify_script_name` 节日提醒
 - UI 配置流，同时保留 YAML 向后兼容
 
-## 0.4.0 改造说明
+## 0.5.0 改造说明
 
-- 使用 Home Assistant 配置的时区，不再固定假设 UTC+8
-- 节假日缓存写入 Home Assistant 配置目录，更新失败时保留上一次有效数据
-- 传感器定时器会在实体卸载时正确注销，避免重载后重复通知
-- 阻塞的节假日和农历计算放到执行器线程，通知脚本使用 Home Assistant 异步服务调用
+- 使用 DataUpdateCoordinator 管理更新，符合当前 Home Assistant 的集成数据刷新方式
+- 节假日网络请求改为 Home Assistant 共享的 aiohttp 会话，不再依赖 requests
+- 使用 Home Assistant 配置的时区，缓存写入配置目录，失败时保留旧数据
+- 配置流文件 `config_flow.py`、节假日模块 `holiday.py` 和农历模块 `lunar.py` 都位于 `custom_components/chineseholiday/`
 
 ## 配置示例
 

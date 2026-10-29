@@ -17,9 +17,11 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import event as evt
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_NAME, DOMAIN
+from .coordinator import ChineseHolidayCoordinator
 from . import holiday
 from . import lunar
 
@@ -75,22 +77,23 @@ async def async_setup_platform(
     discovery_info=None,
 ) -> None:
     """YAML 方式配置（向后兼容）。"""
-    name = config[CONF_NAME]
-    interval = config.get(CONF_UPDATE_INTERVAL, timedelta(hours=8))
-    sensor = ChineseHolidaySensor(
+    coordinator = ChineseHolidayCoordinator(
         hass,
-        name,
-        config.get(CONF_NOTIFY_TIMES, [datetime.time(9, 0, 0)]),
-        config.get(CONF_NOTIFY_SCRIPT_NAME, ""),
-        interval,
-        config.get("show_detail", True),
-        config.get(CONF_SOLAR_ANNIVERSARY, {}),
-        config.get(CONF_LUNAR_ANNIVERSARY, {}),
-        config.get(CONF_CALCULATE_AGE, []),
-        config.get(CONF_NOTIFY_PRINCIPLES, {}),
-        cache_path=hass.config.path("chineseholiday_holidays.json"),
+        {
+            "name": config[CONF_NAME],
+            "notify_times": config.get(CONF_NOTIFY_TIMES, [datetime.time(9, 0, 0)]),
+            "notify_script_name": config.get(CONF_NOTIFY_SCRIPT_NAME, ""),
+            "show_detail": config.get("show_detail", True),
+            "solar_anniversary": config.get(CONF_SOLAR_ANNIVERSARY, {}),
+            "lunar_anniversary": config.get(CONF_LUNAR_ANNIVERSARY, {}),
+            "calculate_age": config.get(CONF_CALCULATE_AGE, []),
+            "notify_principles": config.get(CONF_NOTIFY_PRINCIPLES, {}),
+            "cache_path": hass.config.path("chineseholiday_holidays.json"),
+            "update_interval": config.get(CONF_UPDATE_INTERVAL, timedelta(hours=8)),
+        },
     )
-    async_add_entities([sensor], True)
+    await coordinator.async_config_entry_first_refresh()
+    async_add_entities([ChineseHolidaySensor(coordinator)], True)
 
 
 def _parse_notify_times(times_str: str) -> list[datetime.time]:
@@ -118,28 +121,10 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Config entry 方式配置（UI 添加）。"""
-    notify_times = _parse_notify_times(
-        _entry_get(entry, "notify_times", "09:00:00")
-    )
-    sensor = ChineseHolidaySensor(
-        hass,
-        _entry_get(entry, "name", DEFAULT_NAME),
-        notify_times,
-        _entry_get(entry, "notify_script_name", ""),
-        timedelta(hours=8),
-        _entry_get(entry, "show_detail", True),
-        _entry_get(entry, "solar_anniversary", {}),
-        _entry_get(entry, "lunar_anniversary", {}),
-        _entry_get(entry, "calculate_age", []),
-        _entry_get(entry, "notify_principles", {}),
-        unique_id=f"{DOMAIN}_sensor",
-        entity_id=f"sensor.{DEFAULT_NAME}",
-        cache_path=hass.config.path("chineseholiday_holidays.json"),
-    )
-    async_add_entities([sensor], True)
+    async_add_entities([ChineseHolidaySensor(entry.runtime_data)], True)
 
 
-class ChineseHolidaySensor(SensorEntity):
+class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
     """中国节假日传感器实体。
 
     state 输出：工作日 / 休息日 / 节假日
@@ -152,46 +137,52 @@ class ChineseHolidaySensor(SensorEntity):
 
     def __init__(
         self,
-        hass: HomeAssistant,
-        name: str,
-        notify_times: list,
-        script_name: str,
-        interval: timedelta,
-        show_detail: bool,
-        solar_anniversary: dict,
-        lunar_anniversary: dict,
-        calculate_age: list,
-        notify_principles: dict,
-        unique_id: str | None = None,
-        entity_id: str | None = None,
-        cache_path: str | None = None,
+        coordinator: ChineseHolidayCoordinator,
     ) -> None:
-        self.client_name = name
-        self._attr_name = name
-        self._attr_unique_id = unique_id
-        self._show_detail = show_detail
-        self._hass = hass
-        self._script_name = script_name
+        super().__init__(coordinator)
+        config = coordinator.config
+        notify_times = config.get("notify_times", [datetime.time(9, 0)])
+        if isinstance(notify_times, str):
+            notify_times = _parse_notify_times(notify_times)
+        self.client_name = config.get("name", DEFAULT_NAME)
+        self._attr_name = self.client_name
+        self._attr_unique_id = config.get("unique_id")
+        self._show_detail = config.get("show_detail", True)
+        self._hass = coordinator.hass
+        self._script_name = config.get("notify_script_name", "")
         self._notify_times = notify_times
         # 不在 __init__（事件循环）里做任何 I/O
         # Holiday() 和 CalendarToday() 在 _update()（executor 线程）里懒加载
-        self._holiday: holiday.Holiday | None = None
+        self._holiday: holiday.Holiday | None = coordinator.holiday
         self._lunar: lunar.CalendarToday | None = None
         self.attributes: dict[str, Any] = {}
         self.localizedAttributes: dict[str, Any] = {}
-        self._solar_anniversary = solar_anniversary
-        self._lunar_anniversary = lunar_anniversary
-        self._calculate_age = calculate_age
-        self._notify_principles = notify_principles
-        self._cache_path = cache_path
+        self._solar_anniversary = config.get("solar_anniversary", {})
+        self._lunar_anniversary = config.get("lunar_anniversary", {})
+        self._calculate_age = config.get("calculate_age", [])
+        self._notify_principles = config.get("notify_principles", {})
+        self._cache_path = config.get("cache_path")
         self._remove_update_listener = None
         self._remove_notify_listener = None
         self._now = dt_util.now()
         self._last_notification_signature: tuple[str, str] | None = None
-        self.entity_id = entity_id or generate_entity_id(
+        self.entity_id = config.get("entity_id") or generate_entity_id(
             "sensor.{}", self.client_name, hass=self._hass
         )
+        self._apply_coordinator_data()
         # Timers are registered in async_added_to_hass and removed on unload.
+
+    def _apply_coordinator_data(self) -> None:
+        data = self.coordinator.data or {}
+        if "state" in data:
+            self._attr_native_value = data.get("state")
+            self.localizedAttributes = data.get("attributes", {})
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Apply coordinator payload using the current entity update contract."""
+        self._apply_coordinator_data()
+        super()._handle_coordinator_update()
 
     @property
     def name(self) -> str:
@@ -217,7 +208,7 @@ class ChineseHolidaySensor(SensorEntity):
         @callback
         def _listener(_):
             self._setup_update_listener()
-            self._hass.async_create_task(self.async_request_update())
+            self._hass.async_create_task(self.coordinator.async_request_refresh())
 
         now = dt_util.now()
         next_midnight = (
@@ -276,13 +267,12 @@ class ChineseHolidaySensor(SensorEntity):
         await super().async_will_remove_from_hass()
 
     async def async_request_update(self) -> None:
-        """Run the blocking legacy calculator outside HA's event loop."""
-        await self._hass.async_add_executor_job(self._update)
-        self.async_write_ha_state()
+        """Ask the shared coordinator to refresh."""
+        await self.coordinator.async_request_refresh()
 
     async def async_update(self) -> None:
         """Refresh the entity using HA's async entity contract."""
-        await self.async_request_update()
+        await self.coordinator.async_request_refresh()
 
     # ------------------------------------------------------------------
     # 通知脚本

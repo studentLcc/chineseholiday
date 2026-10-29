@@ -2,24 +2,59 @@
   "config": {
     "step": {
       "user": {
-        "title": "Chinese Holiday Calendar",
-        "description": "Add Chinese Holiday sensor with legal holidays, lunar calendar, solar terms, anniversaries and more.",
+        "title": "Chinese Holiday - basic settings",
+        "description": "Configure the sensor name and notification behavior.",
         "data": {
-          "name": "Sensor name"
+          "name": "Sensor name",
+          "notify_script_name": "Notification script",
+          "notify_times": "Notification times, separated by commas",
+          "show_detail": "Expose the full data attribute"
+        }
+      },
+      "anniversary": {
+        "title": "Chinese Holiday - anniversaries",
+        "description": "Configure solar and lunar anniversaries.",
+        "data": {
+          "solar_anniversary": "Solar anniversaries",
+          "lunar_anniversary": "Lunar anniversaries",
+          "calculate_age": "Exact elapsed-time anniversaries"
+        }
+      },
+      "notify": {
+        "title": "Chinese Holiday - notification rules",
+        "description": "Choose how many days before each date a notification is sent.",
+        "data": {
+          "notify_principles": "Notification rules"
         }
       }
     },
-    "error": {},
     "abort": {
-      "already_configured": "This sensor is already configured"
+      "already_configured": "Chinese Holiday is already configured"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Options",
+        "title": "Basic settings",
         "data": {
-          "show_detail": "Show detailed data attributes"
+          "name": "Sensor name",
+          "notify_script_name": "Notification script",
+          "notify_times": "Notification times",
+          "show_detail": "Expose the full data attribute"
+        }
+      },
+      "anniversary": {
+        "title": "Anniversaries",
+        "data": {
+          "solar_anniversary": "Solar anniversaries",
+          "lunar_anniversary": "Lunar anniversaries",
+          "calculate_age": "Exact elapsed-time anniversaries"
+        }
+      },
+      "notify": {
+        "title": "Notification rules",
+        "data": {
+          "notify_principles": "Notification rules"
         }
       }
     }

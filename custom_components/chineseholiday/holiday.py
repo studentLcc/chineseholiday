@@ -10,13 +10,11 @@ import datetime
 import copy
 from datetime import datetime as datetime_class
 from datetime import timedelta
+import asyncio
 import json
 import logging
 import os
 import re
-import time
-
-import requests
 from homeassistant.util import dt as dt_util
 
 from . import lunar
@@ -49,20 +47,11 @@ class Holiday:
         # __init__ 完全不做 I/O，所有磁盘/网络操作延迟到 _update() 线程中执行
         # 原因：async_setup_entry 在事件循环主线程运行，阻塞 I/O 会被 HA 2024+ 检测并报错
         self._holiday_json: dict = {}
-        self._session: requests.Session | None = None
         # Do not write mutable data into the installed custom component.  HA can
         # replace that directory during an update.  The caller normally passes a
         # path under the HA configuration directory; the module path remains a compatibility
         # fallback for direct standalone use.
         self._cache_path = cache_path or holiday_status_json_path
-
-    def _ensure_session(self) -> requests.Session:
-        if self._session is None:
-            s = requests.Session()
-            s.keep_alive = False
-            requests.adapters.DEFAULT_RETRIES = 3
-            self._session = s
-        return self._session
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -118,8 +107,8 @@ class Holiday:
     # 服务器拉取（bitefu.net）
     # ------------------------------------------------------------------
 
-    def get_holidays_from_server(self, days: int = 15):
-        """从 bitefu.net 更新节假日状态缓存（未来 6 个月）。"""
+    def _prepare_refresh(self, days: int = 15) -> dict:
+        """Load cache metadata without doing network I/O."""
         data: dict = {}
         update_date = "2000-01-01"
 
@@ -142,53 +131,71 @@ class Holiday:
 
         if interval.days <= days and days != 0:
             _LOGGER.debug("get_holidays_from_server: 缓存未过期，跳过更新")
-            return
+            return {
+                "data": data if isinstance(data, dict) else {},
+                "should_fetch": False,
+                "months": [],
+                "today": today_str,
+                "update_date": update_date,
+            }
 
-        _LOGGER.info("get_holidays_from_server: 开始从服务器拉取节假日数据...")
-        # Keep the last known good data if the network is unavailable.  Only
-        # replace the update marker after at least one month was fetched.
-        new_data = copy.deepcopy(data) if isinstance(data, dict) else {}
-        new_data.setdefault("update_time", update_date)
-        fetched = False
-
+        months = []
         for i in range(6):
             month = today.month + i
             year = today.year
             if month > 12:
                 year += 1
                 month -= 12
+            months.append((year, month))
+        return {
+            "data": data if isinstance(data, dict) else {},
+            "should_fetch": True,
+            "months": months,
+            "today": today_str,
+            "update_date": update_date,
+        }
+
+    async def async_refresh(self, hass, days: int = 15) -> None:
+        """Refresh holiday data with Home Assistant's shared aiohttp session."""
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+        snapshot = await hass.async_add_executor_job(self._prepare_refresh, days)
+        cached = snapshot["data"] if isinstance(snapshot["data"], dict) else {}
+        self._holiday_json = cached
+        if not snapshot["should_fetch"]:
+            return
+
+        session = async_get_clientsession(hass)
+        new_data = copy.deepcopy(cached)
+        new_data.setdefault("update_time", snapshot["update_date"])
+        fetched = False
+        for year, month in snapshot["months"]:
             try:
                 year_dict = new_data.setdefault(str(year), {})
-                fetched = self._fetch_one_month(year, month, year_dict) or fetched
-                time.sleep(0.5)
-            except Exception as e:
-                _LOGGER.warning(
-                    "get_holidays_from_server: %d-%02d 拉取失败: %s", year, month, e
-                )
-
+                fetched = await self._async_fetch_one_month(session, year, month, year_dict) or fetched
+            except Exception as err:
+                _LOGGER.warning("async_refresh: %d-%02d 拉取失败: %s", year, month, err)
         if fetched:
-            new_data["update_time"] = today_str
-            self._write_cache(new_data)
+            new_data["update_time"] = snapshot["today"]
             self._holiday_json = new_data
+            await hass.async_add_executor_job(self._write_cache, new_data)
         else:
-            _LOGGER.warning("get_holidays_from_server: 所有月份拉取失败，继续使用旧缓存")
+            _LOGGER.warning("async_refresh: 所有月份拉取失败，继续使用旧缓存")
 
-    def _fetch_one_month(self, year: int, month: int, year_dict: dict):
-        """拉取单月节假日数据并写入 year_dict。"""
+    async def _async_fetch_one_month(self, session, year: int, month: int, year_dict: dict) -> bool:
+        """Fetch one month with the shared async client session."""
         d = f"{year}{month:02d}"
-        params = {"d": d, "info": 1}
         try:
-            resp = self._ensure_session().get(
-                self._BITEFU_API, params=params, timeout=self._REQUEST_TIMEOUT
-            )
-            resp.raise_for_status()
-            result = resp.json()
+            async with asyncio.timeout(self._REQUEST_TIMEOUT):
+                async with session.get(self._BITEFU_API, params={"d": d, "info": 1}) as resp:
+                    resp.raise_for_status()
+                    result = await resp.json(content_type=None)
         except Exception as e:
-            _LOGGER.warning("_fetch_one_month %s: %s", d, e)
+            _LOGGER.warning("_async_fetch_one_month %s: %s", d, e)
             return False
 
         if d not in result:
-            _LOGGER.warning("_fetch_one_month: 响应中无 %s 数据", d)
+            _LOGGER.warning("_async_fetch_one_month: 响应中无 %s 数据", d)
             return False
 
         for key, info in result[d].items():
@@ -211,8 +218,6 @@ class Holiday:
         # 首次调用时从磁盘加载缓存，避免 __init__ 时做 I/O
         if not self._holiday_json:
             self.get_holidays_from_disk()
-        self.get_holidays_from_server()
-
         y_str = str(date.year)
         h_dict = self._holiday_json.get(y_str, {})
         key = f"{date.month:02d}{date.day:02d}"
@@ -492,7 +497,8 @@ class Holiday:
 
     def getHoliday(self, days: int = 1) -> dict:
         """返回 {datetime.date: 节日名称} 字典（用于寻找最近节日）。"""
-        self.get_holidays_from_server()
+        if not self._holiday_json:
+            self.get_holidays_from_disk()
         results = {}
         for y, dates in self._holiday_json.items():
             if y == "update_time":
