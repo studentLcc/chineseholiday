@@ -395,7 +395,7 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
             if len(key) == 8:
                 year, month, day = int(key[:4]), int(key[4:6]), int(key[6:])
                 age = lunar.CalendarToday.get_age_by_birth_lunar_to_solar(
-                    year, month, day
+                    year, month, day, self._now.date()
                 ) + 1
             else:
                 month, day = int(key[:2]), int(key[2:])
@@ -415,7 +415,9 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
             if len(key) == 8:
                 year, month, day = int(key[:4]), int(key[4:6]), int(key[6:])
                 key = key[4:]
-                age = lunar.CalendarToday.get_age_by_birth_solar(year, month, day) + 1
+                age = lunar.CalendarToday.get_age_by_birth_solar(
+                    year, month, day, self._now.date()
+                ) + 1
             else:
                 age = -1
             date_str = str(current_solar_year) + key

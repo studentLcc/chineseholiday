@@ -205,7 +205,7 @@ class ChineseWord():
 
     def day_lunar(ld):
         a = '初一 初二 初三 初四 初五 初六 初七 初八 初九 初十\
-             十一 十二 十三 十四 十五 十六 十七 十八 十九 廿十\
+             十一 十二 十三 十四 十五 十六 十七 十八 十九 二十\
              廿一 廿二 廿三 廿四 廿五 廿六 廿七 廿八 廿九 三十'.split()
         return a[ld - 1]
 
@@ -413,21 +413,26 @@ class CalendarToday:
     _solar = None
     _lunar = None
     def __init__(self, now: datetime.datetime | None = None):
-        _solar = SolarDate(now)
-        _lunar = LunarDate.fromSolarDate(solar_year,solar_month,solar_day)
-        Festival._create_terms(solar_year)
-        Festival._create_weekday_festival(solar_year)
+        # Keep the date on this instance.  LunarDate/lunar.py retains legacy
+        # module globals for compatibility, but holiday lookups also create
+        # LunarDate objects and would otherwise overwrite the sensor's date.
+        self._solar = SolarDate(now)
+        self._lunar = LunarDate.fromSolarDate(
+            self._solar.year, self._solar.month, self._solar.day
+        )
+        Festival._create_terms(self._solar.year)
+        Festival._create_weekday_festival(self._solar.year)
 
     def _solar_festival(self):
         #公历节日
-        s = Festival.solar_Fstv(solar_month, solar_day)
+        s = Festival.solar_Fstv(self._solar.month, self._solar.day)
         if s:
             return s
         return ''
 
     def _lunar_festival(self):
         #农历节日
-        s =  Festival.lunar_Fstv(lunar_month, lunar_day)
+        s = Festival.lunar_Fstv(self._lunar.month, self._lunar.day)
         if s:
             return s
         return ''
@@ -438,14 +443,16 @@ class CalendarToday:
 
     def solar_Term(self):
         #今日节气
-        return Festival.solar_Term(solar_month,solar_day)
+        return Festival.solar_Term(self._solar.month, self._solar.day)
 
     def solar_date_description(self):#阳历时间
         #2000年01月01日
-        return str(solar_year) + "年" + str(solar_month) + "月" + str(solar_day) + "日"
+        return f"{self._solar.year}年{self._solar.month}月{self._solar.day}日"
 
     def solar_week_number(self):
-        return datetime.datetime(int(solar_year), int(solar_month), int(solar_day)).isocalendar()[1]
+        return datetime.datetime(
+            self._solar.year, self._solar.month, self._solar.day
+        ).isocalendar()[1]
 
     def solar_week_number_description(self):#周数  ChineseWord.week_num_str
         return "第"+ChineseWord.week_num_str(self.solar_week_number()) + "周"
@@ -453,17 +460,22 @@ class CalendarToday:
 
     def week_description(self):
         #星期几
-        return ChineseWord.weekday_str(solar_weekday)
+        return ChineseWord.weekday_str(self._solar.weekday)
 
     def lunar_date_description(self):
         #正月初一
-        return ChineseWord.year_lunar(lunar_year) + ' ' + ChineseWord.month_lunar(lunar_isLeapMonth,lunar_month) + ChineseWord.day_lunar(lunar_day)
+        return (
+            ChineseWord.year_lunar(self._lunar.year)
+            + ' '
+            + ChineseWord.month_lunar(self._lunar.isLeapMonth, self._lunar.month)
+            + ChineseWord.day_lunar(self._lunar.day)
+        )
 
     def solar(self):
-        return solar_year,solar_month,solar_day
+        return self._solar.year, self._solar.month, self._solar.day
 
     def lunar(self):
-        return lunar_year,lunar_month,lunar_day
+        return self._lunar.year, self._lunar.month, self._lunar.day
 
     @classmethod
     def lunar_to_solar(cls,year,month,day):
@@ -473,31 +485,25 @@ class CalendarToday:
 
     #date '20000101' 周岁 阳历
     @classmethod
-    def get_age_by_birth_solar(cls,year,month,day):
-        if solar_month < month: #8 9
-            return solar_year - year - 1
-        elif solar_month == month:
-            if solar_day < day:
-                return solar_year - year - 1
-            else:
-                return solar_year - year
-        else: # 8 7
-            return solar_year - year
+    def get_age_by_birth_solar(cls, year, month, day, today=None):
+        today = today or datetime.date.today()
+        age = today.year - year
+        if (today.month, today.day) < (month, day):
+            age -= 1
+        return age
 
     # 传进来的是阴历，要转换成周岁
     @classmethod
-    def get_age_by_birth_lunar_to_solar(cls,year,month,day):
+    def get_age_by_birth_lunar_to_solar(cls, year, month, day, today=None):
         res = CalendarToday.lunar_to_solar(year,month,day)
-        y = res.year
-        m = res.month
-        d = res.day
-        CalendarToday()
-        return cls.get_age_by_birth_solar(y, m, d)
+        return cls.get_age_by_birth_solar(res.year, res.month, res.day, today)
 
     #date '20000101' 虚岁 阴历
     @classmethod
-    def get_age_by_birth_lunar(cls,year,month,day):
-        return lunar_year - year + 1
+    def get_age_by_birth_lunar(cls, year, month, day, today=None):
+        today = today or datetime.date.today()
+        today = LunarDate.fromSolarDate(today.year, today.month, today.day)
+        return today.year - year + 1
 
 Festival._create_terms()
 Festival._create_weekday_festival()
