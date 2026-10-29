@@ -3,3 +3,4 @@
 DOMAIN = "chineseholiday"
 DEFAULT_NAME = "chinese_holiday"
 PLATFORMS = ["sensor"]
+SERVICE_GET = "get"

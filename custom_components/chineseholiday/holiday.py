@@ -155,15 +155,20 @@ class Holiday:
             "update_date": update_date,
         }
 
-    async def async_refresh(self, hass, days: int = 15) -> None:
-        """Refresh holiday data with Home Assistant's shared aiohttp session."""
+    async def async_refresh(self, hass, days: int = 15) -> str:
+        """Refresh holiday data with Home Assistant's shared aiohttp session.
+
+        Returns ``cached`` when the local cache is still fresh, ``updated`` when
+        at least one month was fetched, or ``failed`` when a fetch was required
+        but every request failed. The previous cache is kept on failure.
+        """
         from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
         snapshot = await hass.async_add_executor_job(self._prepare_refresh, days)
         cached = snapshot["data"] if isinstance(snapshot["data"], dict) else {}
         self._holiday_json = cached
         if not snapshot["should_fetch"]:
-            return
+            return "cached"
 
         session = async_get_clientsession(hass)
         new_data = copy.deepcopy(cached)
@@ -179,8 +184,9 @@ class Holiday:
             new_data["update_time"] = snapshot["today"]
             self._holiday_json = new_data
             await hass.async_add_executor_job(self._write_cache, new_data)
-        else:
-            _LOGGER.warning("async_refresh: 所有月份拉取失败，继续使用旧缓存")
+            return "updated"
+        _LOGGER.warning("async_refresh: 所有月份拉取失败，继续使用旧缓存")
+        return "failed"
 
     async def _async_fetch_one_month(self, session, year: int, month: int, year_dict: dict) -> bool:
         """Fetch one month with the shared async client session."""

@@ -79,6 +79,7 @@ entity: sensor.chinese_holiday
 - `calculate_age` 精确显示已经过去/还有多久
 - `notify_principles` + `notify_script_name` 节日提醒
 - UI 配置流，同时保留 YAML 向后兼容
+- 动作 `chineseholiday.get` 可手动拉取节假日
 
 ## 0.5.0 改造说明
 
@@ -86,6 +87,34 @@ entity: sensor.chinese_holiday
 - 节假日网络请求改为 Home Assistant 共享的 aiohttp 会话，不再依赖 requests
 - 使用 Home Assistant 配置的时区，缓存写入配置目录，失败时保留旧数据
 - 配置流文件 `config_flow.py`、节假日模块 `holiday.py` 和农历模块 `lunar.py` 都位于 `custom_components/chineseholiday/`
+
+## 0.6.0 手动拉取节假日
+
+集成平时按 15 天缓存节假日。需要马上更新时，调用动作 `chineseholiday.get`。它会重新请求节假日接口并刷新传感器。
+
+这个动作只更新放假安排缓存，不会修改集成里的纪念日配置，也不会把卡片上新增的纪念日写进节假日数据。
+
+在 `开发者工具 > 动作` 中搜索“手动拉取节假日”，或在自动化中使用：
+
+```yaml
+action: chineseholiday.get
+data:
+  force: true
+```
+
+旧版自动化写法：
+
+```yaml
+service: chineseholiday.get
+data:
+  force: true
+```
+
+`force` 默认是 `true`，表示忽略 15 天缓存。设为 `false` 时，缓存未过期就只重新计算传感器，不请求网络。
+
+配套卡片 [chineseholiday_card](https://github.com/studentLcc/chineseholiday_card) `0.4.0` 起，卡片右上角的“拉取节假日”按钮调用的就是这个动作。
+
+卡片上还可以单独添加公历纪念日。那些纪念日只保存在卡片前端，不会进入本集成，因此也不会触发这里的通知规则。需要提醒的纪念日，仍然配置在本集成的纪念日和通知规则里。
 
 ## 配置示例
 
@@ -192,6 +221,8 @@ test:
 
 ## 版本说明
 
+- `0.6.0`：新增 `chineseholiday.get` 动作，可手动拉取节假日；卡片纪念日与后端节假日分离
+- `0.5.0`：改用 DataUpdateCoordinator 和 aiohttp，适配当前 Home Assistant
 - `0.3.2-pre`：增加最近多次节假日结构化放假详情，继续完善 UI 配置流与新版 Home Assistant / HACS 适配
 - `0.2.0`：支持 HACS，前端从 Polymer 升级到 Lit
 

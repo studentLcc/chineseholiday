@@ -28,6 +28,8 @@ class ChineseHolidayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.config = config
         self.holiday = Holiday(config.get("cache_path"))
         self._calculator = None
+        self._refresh_days: int | None = None
+        self._last_refresh_status = "cached"
 
     @classmethod
     def from_config_entry(cls, hass: HomeAssistant, entry: ConfigEntry) -> ChineseHolidayCoordinator:
@@ -54,7 +56,9 @@ class ChineseHolidayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Refresh remote holiday data, then build the sensor payload."""
-        await self.holiday.async_refresh(self.hass)
+        days = 15 if self._refresh_days is None else self._refresh_days
+        self._refresh_days = None
+        self._last_refresh_status = await self.holiday.async_refresh(self.hass, days)
         if self._calculator is None:
             from .sensor import ChineseHolidaySensor
 
@@ -64,4 +68,22 @@ class ChineseHolidayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             "state": self._calculator._attr_native_value,
             "attributes": dict(self._calculator.localizedAttributes),
+        }
+
+    async def async_get_holidays(self, force: bool = True) -> dict[str, Any]:
+        """Manually pull holiday data and publish a fresh sensor payload.
+
+        This only refreshes the remote holiday calendar cache. Card-local
+        memorial days are not part of this payload and are never written here.
+        """
+        self._refresh_days = 0 if force else self.holiday._CACHE_TTL_DAYS
+        data = await self._async_update_data()
+        self.async_set_updated_data(data)
+        cached = self.holiday._holiday_json if isinstance(self.holiday._holiday_json, dict) else {}
+        return {
+            "name": self.config.get("name", DEFAULT_NAME),
+            "update_time": cached.get("update_time"),
+            "state": data.get("state"),
+            "status": self._last_refresh_status,
+            "forced": force,
         }
