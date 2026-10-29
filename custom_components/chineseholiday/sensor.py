@@ -20,7 +20,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from . import async_register_coordinator
 from .const import DEFAULT_NAME, DOMAIN
 from .coordinator import ChineseHolidayCoordinator
 from . import holiday
@@ -94,7 +93,6 @@ async def async_setup_platform(
         },
     )
     await coordinator.async_config_entry_first_refresh()
-    async_register_coordinator(hass, f"yaml:{config[CONF_NAME]}", coordinator)
     async_add_entities([ChineseHolidaySensor(coordinator)], True)
 
 
@@ -275,6 +273,10 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
     async def async_update(self) -> None:
         """Refresh the entity using HA's async entity contract."""
         await self.coordinator.async_request_refresh()
+
+    async def async_get_holidays(self, force: bool = True) -> dict[str, Any]:
+        """Fetch holiday data for this sensor's coordinator."""
+        return await self.coordinator.async_get_holidays(force)
 
     # ------------------------------------------------------------------
     # 通知脚本

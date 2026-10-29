@@ -62,11 +62,12 @@
   "services": {
     "get": {
       "name": "Fetch holidays",
-      "description": "Request the holiday calendar now and refresh the sensor. This only updates the holiday cache. It does not change anniversaries or import memorial days added on the card.",
+      "description": "Request the holiday calendar now and refresh the targeted sensor.",
       "fields": {
         "force": {
           "name": "Ignore cache",
-          "description": "When enabled, ignore the 15-day cache and request the data immediately. Enabled by default."
+          "description": "When enabled, ignore the 15-day cache and request the data immediately. Enabled by default.",
+          "example": true
         }
       }
     }

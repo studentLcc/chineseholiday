@@ -88,13 +88,25 @@ entity: sensor.chinese_holiday
 - 使用 Home Assistant 配置的时区，缓存写入配置目录，失败时保留旧数据
 - 配置流文件 `config_flow.py`、节假日模块 `holiday.py` 和农历模块 `lunar.py` 都位于 `custom_components/chineseholiday/`
 
-## 0.6.1 下一节日兜底
-
-当远程接口尚未提供下一年度安排时，传感器会按法定日期计算元旦、春节、清明、劳动节、端午、中秋和国庆的基础日期，供“最近的节日”倒计时和当天状态使用。接口返回的正式调休/节假日数据优先；兜底日期不猜测额外调休安排。
-
 ## 0.6.2 农历日期稳定性修复
 
 农历日期现在由日历实例独立保存。计算节假日和农历纪念日时，不会再覆盖传感器当天的农历日期；农历二十也会正确显示为“二十”。
+
+## 0.6.3 按实体拉取节假日
+
+`chineseholiday.get` 现在是绑定到传感器实体的动作。调用时指定目标实体，只会刷新该实体对应的节假日缓存和传感器数据：
+
+```yaml
+action: chineseholiday.get
+target:
+  entity_id: sensor.chinese_holiday
+data:
+  force: true
+```
+
+## 0.6.1 下一节日兜底
+
+当远程接口尚未提供下一年度安排时，传感器会按法定日期计算元旦、春节、清明、劳动节、端午、中秋和国庆的基础日期，供“最近的节日”倒计时和当天状态使用。接口返回的正式调休/节假日数据优先；兜底日期不猜测额外调休安排。
 
 ## 0.6.0 手动拉取节假日
 
@@ -106,6 +118,8 @@ entity: sensor.chinese_holiday
 
 ```yaml
 action: chineseholiday.get
+target:
+  entity_id: sensor.chinese_holiday
 data:
   force: true
 ```
@@ -114,13 +128,15 @@ data:
 
 ```yaml
 service: chineseholiday.get
+target:
+  entity_id: sensor.chinese_holiday
 data:
   force: true
 ```
 
 `force` 默认是 `true`，表示忽略 15 天缓存。设为 `false` 时，缓存未过期就只重新计算传感器，不请求网络。
 
-配套卡片 [chineseholiday_card](https://github.com/studentLcc/chineseholiday_card) `0.4.0` 起，卡片右上角的“拉取节假日”按钮调用的就是这个动作。
+配套卡片 [chineseholiday_card](https://github.com/studentLcc/chineseholiday_card) `0.4.1` 起，卡片右上角的“拉取节假日”按钮会把当前卡片实体作为动作目标。
 
 卡片上还可以单独添加公历纪念日。那些纪念日只保存在卡片前端，不会进入本集成，因此也不会触发这里的通知规则。需要提醒的纪念日，仍然配置在本集成的纪念日和通知规则里。
 
@@ -229,6 +245,7 @@ test:
 
 ## 版本说明
 
+- `0.6.3`：将手动拉取节假日动作绑定到目标传感器实体
 - `0.6.2`：修复节日换算覆盖当前农历日期的问题，并修正农历二十的显示
 - `0.6.1`：接口缺少下一年度安排时，按法定日期兜底计算下一节日与状态
 - `0.6.0`：新增 `chineseholiday.get` 动作，可手动拉取节假日；卡片纪念日与后端节假日分离
