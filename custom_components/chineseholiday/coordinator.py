@@ -18,12 +18,18 @@ _LOGGER = logging.getLogger(__name__)
 class ChineseHolidayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Fetch holiday data asynchronously and calculate entity state off the loop."""
 
-    def __init__(self, hass: HomeAssistant, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config: dict[str, Any],
+        entry: ConfigEntry | None = None,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=config.get("update_interval", timedelta(hours=8)),
+            config_entry=entry,
         )
         self.config = config
         self.holiday = Holiday(config.get("cache_path"))
@@ -47,11 +53,11 @@ class ChineseHolidayCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "lunar_anniversary": data.get("lunar_anniversary", {}),
                 "calculate_age": data.get("calculate_age", []),
                 "notify_principles": data.get("notify_principles", {}),
-                "unique_id": f"{DOMAIN}_sensor",
-                "entity_id": f"sensor.{DEFAULT_NAME}",
+                "unique_id": f"{DOMAIN}_{entry.entry_id}",
                 "cache_path": hass.config.path("chineseholiday_holidays.json"),
                 "update_interval": timedelta(hours=8),
             },
+            entry,
         )
 
     async def _async_update_data(self) -> dict[str, Any]:

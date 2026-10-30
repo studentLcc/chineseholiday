@@ -13,7 +13,7 @@
       },
       "anniversary": {
         "title": "中国节假日 - 纪念日设置",
-        "description": "配置公历/农历纪念日，格式为 YAML 对象。\n\n公历示例：\n```yaml\n0101:\n  - 张三生日\n20200220:\n  - 结婚纪念日\n```\n\n农历示例：\n```yaml\n0321:\n  - 李四农历生日\n```\n\n计时纪念日（calculate_age）示例：\n```yaml\n- date: '2022-10-10 10:23:10'\n  name: 结婚周年\n```",
+        "description": "配置公历/农历纪念日，格式为 YAML 对象。\n\n公历示例：\n```yaml\n0101:\n  - 张三生日\n20200220:\n  - 结婚纪念日\n```\n\n农历示例：\n```yaml\n0321:\n  - 李四农历生日\n```\n\n卡片内也可独立添加公历或农历纪念日。\n\n计时纪念日示例：\n```yaml\n- date: '2022-10-10 10:23:10'\n  name: 结婚周年\n```",
         "data": {
           "solar_anniversary": "公历纪念日（格式：MMDD 或 YYYYMMDD → [名称列表]）",
           "lunar_anniversary": "农历纪念日（格式：MMDD 或 YYYYMMDD → [名称列表]）",
@@ -30,6 +30,9 @@
     },
     "abort": {
       "already_configured": "该传感器已经配置"
+    },
+    "error": {
+      "invalid_calculate_age": "精确计时纪念日的每一项都要有 name，date 用 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS"
     }
   },
   "options": {
@@ -57,6 +60,9 @@
           "notify_principles": "通知规则"
         }
       }
+    },
+    "error": {
+      "invalid_calculate_age": "精确计时纪念日的每一项都要有 name，date 用 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS"
     }
   },
   "services": {

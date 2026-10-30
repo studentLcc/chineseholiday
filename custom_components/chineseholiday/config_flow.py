@@ -1,6 +1,8 @@
 """Config flow for Chinese Holiday integration."""
 from __future__ import annotations
 
+import datetime
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
@@ -80,6 +82,36 @@ def _step_notify_schema(defaults: dict | None = None) -> vol.Schema:
     )
 
 
+
+def normalize_calculate_age(value):
+    """Validate precise-timer memorials before they can break setup."""
+    if value in (None, "", {}):
+        return []
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("calculate_age")
+    cleaned = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("calculate_age")
+        name = str(item.get("name") or "").strip()
+        date = str(item.get("date") or "").strip()
+        if not name or not date:
+            raise ValueError("calculate_age")
+        parsed = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.datetime.strptime(date, fmt)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            raise ValueError("calculate_age")
+        cleaned.append({"name": name, "date": parsed.strftime("%Y-%m-%d %H:%M:%S")})
+    return cleaned
+
+
 # ── Config Flow ───────────────────────────────────────────────────────────────
 
 class ChineseHolidayConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -108,13 +140,24 @@ class ChineseHolidayConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_anniversary(self, user_input=None):
         """步骤二：阳历 / 阴历纪念日 & calculate_age。"""
+        errors = {}
+        defaults = user_input
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_notify()
+            try:
+                user_input = dict(user_input)
+                user_input["calculate_age"] = normalize_calculate_age(
+                    user_input.get("calculate_age", [])
+                )
+            except ValueError:
+                errors["base"] = "invalid_calculate_age"
+            else:
+                self._data.update(user_input)
+                return await self.async_step_notify()
 
         return self.async_show_form(
             step_id="anniversary",
-            data_schema=_step_anniversary_schema(),
+            data_schema=_step_anniversary_schema(defaults),
+            errors=errors,
         )
 
     async def async_step_notify(self, user_input=None):
@@ -178,18 +221,29 @@ class ChineseHolidayOptionsFlow(config_entries.OptionsFlow):
     async def async_step_anniversary(self, user_input=None):
         """步骤二：纪念日设置。"""
         entry = self.config_entry
+        errors = {}
         defaults = {
             "solar_anniversary": _opt("solar_anniversary", {}, entry),
             "lunar_anniversary": _opt("lunar_anniversary", {}, entry),
             "calculate_age": _opt("calculate_age", [], entry),
         }
         if user_input is not None:
-            self._updated.update(user_input)
-            return await self.async_step_notify()
+            defaults = user_input
+            try:
+                user_input = dict(user_input)
+                user_input["calculate_age"] = normalize_calculate_age(
+                    user_input.get("calculate_age", [])
+                )
+            except ValueError:
+                errors["base"] = "invalid_calculate_age"
+            else:
+                self._updated.update(user_input)
+                return await self.async_step_notify()
 
         return self.async_show_form(
             step_id="anniversary",
             data_schema=_step_anniversary_schema(defaults),
+            errors=errors,
         )
 
     async def async_step_notify(self, user_input=None):

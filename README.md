@@ -55,7 +55,7 @@ UI 中显示的是中文字段名，底层仍然对应原来的 YAML 键：
 ```yaml
 resources:
   - type: module
-    url: /local/custom-lovelace/ch_calendar-card/ch_calendar-card.js
+    url: /hacsfiles/chineseholiday_card/dist/ch_calendar-card.js
 ```
 
 3. 添加卡片：
@@ -136,9 +136,9 @@ data:
 
 `force` 默认是 `true`，表示忽略 15 天缓存。设为 `false` 时，缓存未过期就只重新计算传感器，不请求网络。
 
-配套卡片 [chineseholiday_card](https://github.com/studentLcc/chineseholiday_card) `0.4.1` 起，卡片右上角的“拉取节假日”按钮会把当前卡片实体作为动作目标。
+配套卡片 [chineseholiday_card](https://github.com/studentLcc/chineseholiday_card) `0.5.0` 起，卡片右上角的“拉取节假日”按钮会把当前卡片实体作为动作目标。
 
-卡片上还可以单独添加公历纪念日。那些纪念日只保存在卡片前端，不会进入本集成，因此也不会触发这里的通知规则。需要提醒的纪念日，仍然配置在本集成的纪念日和通知规则里。
+卡片上还可以单独添加公历或农历纪念日。那些日期只保存在卡片前端，不会进入本集成，因此也不会触发这里的通知规则。需要由后端通知的纪念日，仍配置在本集成的纪念日和通知规则里。
 
 ## 配置示例
 
@@ -245,6 +245,7 @@ test:
 
 ## 版本说明
 
+- `0.6.4`：修复协调器兼容、纪念日回滚与校验、节日缓存和卡片属性；节假日安排支持远期法定日期兜底
 - `0.6.3`：将手动拉取节假日动作绑定到目标传感器实体
 - `0.6.2`：修复节日换算覆盖当前农历日期的问题，并修正农历二十的显示
 - `0.6.1`：接口缺少下一年度安排时，按法定日期兜底计算下一节日与状态

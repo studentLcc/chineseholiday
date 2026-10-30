@@ -1,12 +1,14 @@
 {
   "domain": "chineseholiday",
   "name": "中国节假日日历",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "documentation": "https://github.com/studentLcc/chineseholiday",
   "issue_tracker": "https://github.com/studentLcc/chineseholiday/issues",
   "requirements": [],
   "dependencies": [],
-  "codeowners": ["@studentLcc"],
+  "codeowners": [
+    "@studentLcc"
+  ],
   "iot_class": "cloud_polling",
   "config_flow": true
 }

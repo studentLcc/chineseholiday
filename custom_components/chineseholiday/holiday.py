@@ -121,15 +121,23 @@ class Holiday:
             except Exception:
                 continue
 
+        if not isinstance(data, dict):
+            _LOGGER.warning("节假日缓存顶层格式错误，按空缓存处理")
+            data = {}
         if data and "update_time" in data:
             update_date = data["update_time"]
 
         today = self.today()
         today_str = today.strftime("%Y-%m-%d")
-        last_update = datetime_class.strptime(update_date, "%Y-%m-%d")
+        refresh_pending = bool(data.get("refresh_pending"))
+        try:
+            last_update = datetime_class.strptime(str(update_date), "%Y-%m-%d")
+        except (TypeError, ValueError):
+            _LOGGER.warning("节假日缓存 update_time 无法解析（%s），按过期处理", update_date)
+            last_update = datetime_class(2000, 1, 1)
         interval = today - last_update
 
-        if interval.days <= days and days != 0:
+        if interval.days <= days and days != 0 and not refresh_pending:
             _LOGGER.debug("get_holidays_from_server: 缓存未过期，跳过更新")
             return {
                 "data": data if isinstance(data, dict) else {},
@@ -137,6 +145,7 @@ class Holiday:
                 "months": [],
                 "today": today_str,
                 "update_date": update_date,
+                "refresh_pending": refresh_pending,
             }
 
         months = []
@@ -153,6 +162,7 @@ class Holiday:
             "months": months,
             "today": today_str,
             "update_date": update_date,
+            "refresh_pending": refresh_pending,
         }
 
     async def async_refresh(self, hass, days: int = 15) -> str:
@@ -173,20 +183,34 @@ class Holiday:
         session = async_get_clientsession(hass)
         new_data = copy.deepcopy(cached)
         new_data.setdefault("update_time", snapshot["update_date"])
-        fetched = False
+        attempted = 0
+        succeeded = 0
         for year, month in snapshot["months"]:
+            attempted += 1
             try:
                 year_dict = new_data.setdefault(str(year), {})
-                fetched = await self._async_fetch_one_month(session, year, month, year_dict) or fetched
+                ok = await self._async_fetch_one_month(session, year, month, year_dict)
             except Exception as err:
+                ok = False
                 _LOGGER.warning("async_refresh: %d-%02d 拉取失败: %s", year, month, err)
-        if fetched:
+            if ok:
+                succeeded += 1
+        complete = succeeded == attempted and attempted > 0
+        if complete:
             new_data["update_time"] = snapshot["today"]
-            self._holiday_json = new_data
-            await hass.async_add_executor_job(self._write_cache, new_data)
-            return "updated"
-        _LOGGER.warning("async_refresh: 所有月份拉取失败，继续使用旧缓存")
-        return "failed"
+            new_data.pop("refresh_pending", None)
+        else:
+            new_data["refresh_pending"] = True
+            _LOGGER.warning(
+                "async_refresh: %s/%s 个月拉取成功，保留待重试标记且不更新缓存时间",
+                succeeded,
+                attempted,
+            )
+        self._holiday_json = new_data
+        await hass.async_add_executor_job(self._write_cache, new_data)
+        if succeeded == 0:
+            return "failed"
+        return "updated" if complete else "partial"
 
     async def _async_fetch_one_month(self, session, year: int, month: int, year_dict: dict) -> bool:
         """Fetch one month with the shared async client session."""
@@ -200,17 +224,42 @@ class Holiday:
             _LOGGER.warning("_async_fetch_one_month %s: %s", d, e)
             return False
 
-        if d not in result:
+        if not isinstance(result, dict) or d not in result:
             _LOGGER.warning("_async_fetch_one_month: 响应中无 %s 数据", d)
             return False
+        if not isinstance(result[d], dict) or not result[d]:
+            _LOGGER.warning("_async_fetch_one_month: %s 数据格式错误或为空", d)
+            return False
 
-        for key, info in result[d].items():
-            t = int(info.get("type", 0))
-            w = int(info.get("week2", 0))
-            # 节假日(1/2)或本应为周末却被调为工作日的(0)都记录
-            if t in (1, 2) or (w in (6, 7) and t == 0):
-                year_dict[key] = str(t)
+        self._replace_month(year_dict, month, result[d])
         return True
+
+    def _replace_month(self, year_dict: dict, month: int, entries: dict) -> None:
+        """Replace one month so corrected workdays do not keep an old holiday mark."""
+        if not isinstance(entries, dict) or not entries:
+            return
+        prefix = f"{month:02d}"
+        replacement = {}
+        for key, info in entries.items():
+            key = str(key)
+            if not isinstance(info, dict) or not re.fullmatch(r"\d{4}", key):
+                continue
+            if not key.startswith(prefix) or "type" not in info:
+                continue
+            try:
+                status = int(info["type"])
+            except (TypeError, ValueError):
+                continue
+            if status in (0, 1, 2):
+                replacement[key] = str(status)
+        if not replacement:
+            return
+        # Keep the complete month: API type 0/1 must override fallback
+        # holidays, and a corrected entry must erase the prior value.
+        for key in list(year_dict):
+            if isinstance(key, str) and len(key) == 4 and key.startswith(prefix):
+                year_dict.pop(key, None)
+        year_dict.update(replacement)
 
     # ------------------------------------------------------------------
     # 节假日状态查询
@@ -226,14 +275,27 @@ class Holiday:
             self.get_holidays_from_disk()
         y_str = str(date.year)
         h_dict = self._holiday_json.get(y_str, {})
+        if not isinstance(h_dict, dict):
+            h_dict = {}
         key = f"{date.month:02d}{date.day:02d}"
         # 法定节日的日期固定，但下一年度的调休安排可能尚未发布；
         # 远端接口此时可能把日期暂时标成普通工作日或休息日。
         holiday_date = date.date() if isinstance(date, datetime.datetime) else date
-        if holiday_date in self._known_holiday_dates({date.year}):
-            return 2
+        known = self._known_holiday_dates({holiday_date.year})
+        stored = None
         if key in h_dict:
-            return int(h_dict[key])
+            try:
+                stored = int(h_dict[key])
+            except (TypeError, ValueError):
+                stored = None
+        # Type 0 means an explicit workday. A routine rest day (type 1) does
+        # not replace a statutory date; fixed-date fallback keeps it type 2.
+        if stored == 0:
+            return 0
+        if stored == 2 or holiday_date in known:
+            return 2
+        if stored is not None:
+            return stored
         # 没有特殊标注：周末=休息日，工作日=工作日
         return 1 if date.weekday() >= 5 else 0
 
@@ -251,86 +313,119 @@ class Holiday:
     # ------------------------------------------------------------------
 
     def nearest_holiday_details(
-        self, count: int = 2, min_days: int = 30, max_days: int = 45
+        self, count: int = 2, min_days: int = 30, max_days: int | None = 45
     ) -> list[dict]:
-        """返回最近若干次法定节假日的结构化放假安排。"""
+        """返回最近若干次法定节假日的结构化放假安排。
+
+        ``max_days`` 为 None 时不限制距离，只按日期由近到远取 ``count`` 个。
+        下一年度安排尚未公布时，用固定法定日作为种子，避免假期块整段空白。
+        """
+        if not self._holiday_json:
+            self.get_holidays_from_disk()
         today = self.today()
         details = []
         seen_periods: set[tuple[str, str]] = set()
-        for y in self._holiday_json:
-            if y == "update_time":
+        seeds: list[datetime_class] = []
+        seen_days: set[datetime.date] = set()
+        announced_days: set[datetime.date] = set()
+        for y, dates in self._holiday_json.items():
+            if y == "update_time" or not str(y).isdigit() or not isinstance(dates, dict):
                 continue
-            dates = self._holiday_json[y]
             for m, t in dates.items():
-                if int(t) != 2:
+                try:
+                    if int(t) != 2:
+                        continue
+                    date = datetime_class.strptime(f"{y}-{m[0:2]}-{m[2:]}", "%Y-%m-%d")
+                except (TypeError, ValueError):
                     continue
-                d = "{}-{}-{}".format(y, m[0:2], m[2:])
-                date = datetime_class.strptime(d, "%Y-%m-%d")
-                diff = (date - today).days
-                if diff > max_days:
-                    continue
+                seeds.append(date)
+                seen_days.add(date.date())
+                announced_days.add(date.date())
 
-                start = date
-                end = date
+        years = {today.year, today.year + 1}
+        years.update(day.year for day in seen_days)
+        for known_date in self._known_holiday_dates(years):
+            if known_date in seen_days:
+                continue
+            year_dict = self._holiday_json.get(str(known_date.year), {})
+            mmdd = f"{known_date.month:02d}{known_date.day:02d}"
+            if isinstance(year_dict, dict) and str(year_dict.get(mmdd)) == "0":
+                continue
+            seeds.append(datetime_class(known_date.year, known_date.month, known_date.day))
+            seen_days.add(known_date)
 
-                while self.is_holiday_status(start) != 0:
-                    start -= timedelta(days=1)
-                while self.is_holiday_status(end) != 0:
-                    end += timedelta(days=1)
+        for date in sorted(seeds):
+            y = str(date.year)
+            m = date.strftime("%m%d")
+            diff = (date - today).days
+            if max_days is not None and diff > max_days:
+                continue
 
-                start += timedelta(days=1)
-                end -= timedelta(days=1)
-                period_key = (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-                if period_key in seen_periods:
-                    continue
-                seen_periods.add(period_key)
+            start = date
+            end = date
 
-                if diff < min_days and not self._is_in_bridge_window(start, end, today):
-                    continue
+            while self.is_holiday_status(start) != 0:
+                start -= timedelta(days=1)
+            while self.is_holiday_status(end) != 0:
+                end += timedelta(days=1)
 
-                holiday_name = self._resolve_holiday_period_name(y, start, end, m)
-                holiday_days = (end - start).days + 1
-                before_plan = self._build_bridge_plan(start, end, "before", today)
-                after_plan = self._build_bridge_plan(start, end, "after", today)
+            start += timedelta(days=1)
+            end -= timedelta(days=1)
+            period_key = (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+            if period_key in seen_periods:
+                continue
+            seen_periods.add(period_key)
 
-                rows = []
-                if before_plan:
-                    rows.append({
-                        "label": "向前拼",
-                        "range": before_plan["leave_range"],
-                        "start": before_plan["leave_start"],
-                        "end": before_plan["leave_end"],
-                        "days": before_plan["leave_days"],
-                        "total_days": before_plan["total_days"],
-                        "calendar_days": before_plan["calendar_days"],
-                    })
-                if after_plan:
-                    rows.append({
-                        "label": "向后拼",
-                        "range": after_plan["leave_range"],
-                        "start": after_plan["leave_start"],
-                        "end": after_plan["leave_end"],
-                        "days": after_plan["leave_days"],
-                        "total_days": after_plan["total_days"],
-                        "calendar_days": after_plan["calendar_days"],
-                    })
-                detail = {
-                    "name": holiday_name,
-                    "range": f"{start.month}/{start.day} - {end.month}/{end.day}",
-                    "start": start.strftime("%Y-%m-%d"),
-                    "end": end.strftime("%Y-%m-%d"),
-                    "days": holiday_days,
-                    "title": f"{holiday_name}（{start.month}/{start.day} - {end.month}/{end.day}）",
-                    "rows": rows,
-                }
-                details.append(detail)
-                if len(details) >= count:
-                    _LOGGER.debug("nearest_holiday_details: %s", details)
-                    return details
+            if diff < min_days and not self._is_in_bridge_window(start, end, today):
+                continue
+
+            holiday_name = self._resolve_holiday_period_name(y, start, end, m)
+            holiday_days = (end - start).days + 1
+            schedule_published = any(
+                start.date() <= announced <= end.date() for announced in announced_days
+            )
+            before_plan = self._build_bridge_plan(start, end, "before", today) if schedule_published else {}
+            after_plan = self._build_bridge_plan(start, end, "after", today) if schedule_published else {}
+
+            rows = []
+            if before_plan:
+                rows.append({
+                    "label": "向前拼",
+                    "range": before_plan["leave_range"],
+                    "start": before_plan["leave_start"],
+                    "end": before_plan["leave_end"],
+                    "days": before_plan["leave_days"],
+                    "total_days": before_plan["total_days"],
+                    "calendar_days": before_plan["calendar_days"],
+                })
+            if after_plan:
+                rows.append({
+                    "label": "向后拼",
+                    "range": after_plan["leave_range"],
+                    "start": after_plan["leave_start"],
+                    "end": after_plan["leave_end"],
+                    "days": after_plan["leave_days"],
+                    "total_days": after_plan["total_days"],
+                    "calendar_days": after_plan["calendar_days"],
+                })
+            detail = {
+                "name": holiday_name,
+                "range": f"{start.month}/{start.day} - {end.month}/{end.day}",
+                "start": start.strftime("%Y-%m-%d"),
+                "end": end.strftime("%Y-%m-%d"),
+                "days": holiday_days,
+                "schedule_published": schedule_published,
+                "title": f"{holiday_name}（{start.month}/{start.day} - {end.month}/{end.day}）",
+                "rows": rows,
+            }
+            details.append(detail)
+            if len(details) >= count:
+                _LOGGER.debug("nearest_holiday_details: %s", details)
+                return details
         _LOGGER.debug("nearest_holiday_details: %s", details)
         return details
 
-    def nearest_holiday_detail(self, min_days: int = 30, max_days: int = 45) -> dict:
+    def nearest_holiday_detail(self, min_days: int = 30, max_days: int | None = 45) -> dict:
         """返回最近一次法定节假日的结构化放假安排。"""
         details = self.nearest_holiday_details(1, min_days, max_days)
         if details:
@@ -470,7 +565,7 @@ class Holiday:
             "calendar_days": calendar_days,
         }
 
-    def nearest_holiday_info(self, min_days: int = 30, max_days: int = 45) -> str:
+    def nearest_holiday_info(self, min_days: int = 30, max_days: int | None = 45) -> str:
         """返回最近一次法定节假日的放假安排说明。"""
         detail = self.nearest_holiday_detail(min_days, max_days)
         if not detail:
@@ -508,7 +603,6 @@ class Holiday:
     _KNOWN_SOLAR_HOLIDAYS = {
         "0101": "元旦",
         "0501": "劳动节",
-        "0502": "劳动节",
         "1001": "国庆节",
         "1002": "国庆节",
         "1003": "国庆节",
@@ -523,10 +617,24 @@ class Holiday:
         """Return statutory holiday dates when next year's official notice is absent.
 
         The public API only marks announced days as ``type=2``. Around the end
-        of a year it can therefore return January 1 as an ordinary workday
-        until the State Council publishes the next year's arrangement. These
-        dates are calendar holidays, while API data still wins when available.
+        of a year it can therefore leave January 1 out of the cache until the
+        State Council publishes the next year's arrangement. Explicit cache
+        values still win: type 0 stays a workday, and type 2 keeps its record.
         """
+        cache = self.__dict__.setdefault("_known_holiday_cache", {})
+        missing = [year for year in years if year not in cache]
+        if missing:
+            computed = self._compute_known_holiday_dates(set(missing))
+            for year in missing:
+                cache[year] = {}
+            for date, name in computed.items():
+                cache.setdefault(date.year, {})[date] = name
+        result: dict = {}
+        for year in years:
+            result.update(cache.get(year, {}))
+        return result
+
+    def _compute_known_holiday_dates(self, years: set[int]) -> dict:
         results: dict = {}
         for year in years:
             for mmdd, name in self._KNOWN_SOLAR_HOLIDAYS.items():
@@ -583,19 +691,56 @@ class Holiday:
                 years.add(int(y))
             except (TypeError, ValueError):
                 continue
+            if not isinstance(dates, dict):
+                continue
             for m, t in dates.items():
-                if int(t) != 2:
+                try:
+                    if int(t) != 2:
+                        continue
+                    d_str = "{}-{}-{}".format(y, m[0:2], m[2:])
+                except (TypeError, ValueError, IndexError):
                     continue
-                d_str = "{}-{}-{}".format(y, m[0:2], m[2:])
                 try:
                     d = datetime_class.strptime(d_str, "%Y-%m-%d").date()
                     results[d] = self._resolve_holiday_name(y, m)
                 except (TypeError, ValueError):
                     continue
 
-        # Fill only missing dates. Official API records remain authoritative.
+        # Fill only missing dates. A cached workday (type 0) stays authoritative.
         for date, name in self._known_holiday_dates(years).items():
+            year_dict = self._holiday_json.get(str(date.year), {})
+            mmdd = f"{date.month:02d}{date.day:02d}"
+            if isinstance(year_dict, dict) and str(year_dict.get(mmdd)) == "0":
+                continue
             results.setdefault(date, name)
+        return self._apply_period_names(results)
+
+    def _apply_period_names(self, results: dict) -> dict:
+        """Name unnamed days inside a continuous holiday after the named day."""
+        if not results:
+            return results
+        ordered = sorted(results)
+        groups: list[list] = [[ordered[0]]]
+        for date in ordered[1:]:
+            if (date - groups[-1][-1]).days == 1:
+                groups[-1].append(date)
+            else:
+                groups.append([date])
+        preferred_names = ("春节", "国庆节", "劳动节", "清明节", "端午节", "中秋节", "元旦")
+        for group in groups:
+            names = [
+                results[date]
+                for date in group
+                if not re.fullmatch(r"\d+月\d+日", str(results[date]))
+            ]
+            if not names:
+                continue
+            chosen = next((name for name in names if name in preferred_names), None)
+            if chosen is None:
+                chosen = next((name for name in names if "节" in name), names[0])
+            for date in group:
+                if re.fullmatch(r"\d+月\d+日", str(results[date])):
+                    results[date] = chosen
         return results
 
     def _resolve_holiday_name(self, year: str, mmdd: str) -> str:
@@ -629,7 +774,7 @@ class Holiday:
         # 兼容旧逻辑：未命中固定映射时，再按公历节日/农历节日/节气动态解析。
         names = []
 
-        solar_name = lunar.Festival.solar_Fstv(month, day)
+        solar_name = lunar.Festival.solar_Fstv_for_year(month, day, year_int)
         if solar_name:
             names.extend([name.strip() for name in solar_name.split(",") if name.strip()])
 

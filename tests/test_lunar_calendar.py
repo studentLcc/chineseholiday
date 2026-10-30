@@ -37,6 +37,14 @@ class CalendarTodayTests(unittest.TestCase):
         self.assertEqual(calendar.lunar(), (2026, 8, 15))
         self.assertEqual(calendar.festival_description(), "中秋节")
 
+    def test_year_specific_festivals_do_not_mutate_other_instances(self) -> None:
+        calendar_2026 = lunar.CalendarToday(datetime.datetime(2026, 5, 10))
+        calendar_2027 = lunar.CalendarToday(datetime.datetime(2027, 5, 9))
+
+        self.assertIn("母亲节", calendar_2026.festival_description())
+        self.assertIn("母亲节", calendar_2027.festival_description())
+        self.assertIn("母亲节", calendar_2026.festival_description())
+
     def test_solar_age_uses_the_sensor_date(self) -> None:
         today = datetime.date(2026, 10, 29)
 

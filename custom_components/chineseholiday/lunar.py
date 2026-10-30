@@ -7,26 +7,18 @@ A Chinese Calendar Library in Python
 '''
 
 
-import os, io, sys, re, time, datetime, base64
-from datetime import timedelta
-path = os.path.dirname(os.path.realpath(__file__))
-sys.path.append(path)
-import  term
-from term import jieqi
+import datetime
+from functools import lru_cache
+from threading import RLock
+try:
+    from .term import jieqi
+except ImportError:
+    from term import jieqi
 
 __version__ = "$Rev: 123 $"
 __all__ = ['LunarDate']
 
 
-solar_year          = 1900
-solar_month         = 1
-solar_day           = 31
-solar_weekday          = 0
-
-lunar_year          = 0
-lunar_month         = 0
-lunar_day           = 0
-lunar_isLeapMonth   = False
 #   0620#aa 生日# #bb 纪念日#
 # '([\w+?\#?\(?\)?\d+\s?·?]*)' | solar_Fstv | #aa 生日# #bb 纪念日#
 # '([\w+?\#?\s?]*)' | festival_handle,weekday_Fstv |  #aa 生日# #bb 纪念日#
@@ -101,16 +93,6 @@ class LunarDate(object):
 
 
     def __init__(self, year, month, day, isLeapMonth=False):
-        global lunar_year
-        global lunar_month
-        global lunar_day
-        global lunar_isLeapMonth
-
-        lunar_year          = int(year)
-        lunar_month         = int(month)
-        lunar_day           = int(day)
-        lunar_isLeapMonth   = bool(isLeapMonth)
-
         self.year = year
         self.month = month
         self.day = day
@@ -226,85 +208,82 @@ class ChineseWord():
 class Festival():
 
     _solar_festival = {'0101': ['元旦节'], '0202': ['世界湿地日'], '0210': ['国际气象节'], '0214': ['情人节'], '0301': ['国际海豹日'], '0303': ['全国爱耳日'], '0305': ['学雷锋纪念日'], '0308': ['妇女节'], '0312': ['植树节', '孙中山逝世纪念日'], '0314': ['国际警察日'], '0315': ['消费者权益日'], '0317': ['中国国医节', '国际航海日'], '0321': ['世界森林日', '消除种族歧视国际日', '世界儿歌日'], '0322': ['世界水日'], '0323': ['世界气象日'], '0324': ['世界防治结核病日'], '0325': ['全国中小学生安全教育日'], '0330': ['巴勒斯坦国土日'], '0401': ['愚人节', '全国爱国卫生运动月(四月)', '税收宣传月(四月)'], '0407': ['世界卫生日'], '0422': ['世界地球日'], '0423': ['世界图书和版权日'], '0424': ['亚非新闻工作者日'], '0501': ['劳动节'], '0504': ['青年节'], '0505': ['碘缺乏病防治日'], '0508': ['世界红十字日'], '0512': ['国际护士节'], '0515': ['国际家庭日'], '0517': ['国际电信日'], '0518': ['国际博物馆日'], '0520': ['全国学生营养日'], '0523': ['国际牛奶日'], '0531': ['世界无烟日'], '0601': ['国际儿童节'], '0605': ['世界环境保护日'], '0606': ['全国爱眼日'], '0617': ['防治荒漠化和干旱日'], '0623': ['国际奥林匹克日'], '0625': ['全国土地日'], '0626': ['国际禁毒日'], '0701': ['中国共·产党诞辰', '香港回归纪念日', '世界建筑日'], '0702': ['国际体育记者日'], '0707': ['抗日战争纪念日'], '0711': ['世界人口日'], '0730': ['非洲妇女日'], '0801': ['建军节'], '0808': ['中国男子节(爸爸节)'], '0815': ['抗日战争胜利纪念'], '0908': ['国际扫盲日', '国际新闻工作者日'], '0909': ['毛·泽东逝世纪念'], '0910': ['中国教师节'], '0914': ['世界清洁地球日'], '0916': ['国际臭氧层保护日'], '0918': ['九·一八事变纪念日'], '0920': ['国际爱牙日'], '0927': ['世界旅游日'], '0928': ['孔子诞辰'], '1001': ['国庆节', '世界音乐日', '国际老人节'], '1002': ['国庆节假日', '国际和平与民主自由斗争日'], '1003': ['国庆节假日'], '1004': ['世界动物日'], '1006': ['老人节'], '1008': ['全国高血压日', '世界视觉日'], '1009': ['世界邮政日', '万国邮联日'], '1010': ['辛亥革命纪念日', '世界精神卫生日'], '1013': ['世界保健日', '国际教师节'], '1014': ['世界标准日'], '1015': ['国际盲人节(白手杖节)'], '1016': ['世界粮食日'], '1017': ['世界消除贫困日'], '1022': ['世界传统医药日'], '1024': ['联合国日'], '1031': ['世界勤俭日'], '1107': ['十月社会主义革命纪念日'], '1108': ['中国记者日'], '1109': ['全国消防安全宣传教育日'], '1110': ['世界青年节'], '1111': ['光棍节', '国际科学与和平周(本日所属的一周)'], '1112': ['孙中山诞辰纪念日'], '1114': ['世界糖尿病日'], '1116': ['国际宽容日'], '1117': ['国际大学生节', '世界学生节'], '1120': ['彝族年'], '1121': ['彝族年', '世界问候日', '世界电视日'], '1122': ['彝族年'], '1129': ['国际声援巴勒斯坦人民国际日'], '1201': ['世界艾滋病日'], '1203': ['世界残疾人日'], '1205': ['国际经济和社会发展志愿人员日'], '1208': ['国际儿童电视日'], '1209': ['世界足球日'], '1210': ['世界人权日'], '1212': ['西安事变纪念日'], '1213': ['南京大屠杀(1937年)纪念日'], '1220': ['澳门回归纪念'], '1221': ['国际篮球日'], '1224': ['平安夜'], '1225': ['圣诞节'], '1226': ['毛·泽东诞辰纪念日']}
+    _BASE_SOLAR_FESTIVAL = dict(_solar_festival)
 
     _lunar_festival = {'0101': ['春节'], '0115': ['元宵节'], '0202': ['春龙节'], '0505': ['端午节'], '0707': ['七夕情人节'], '0715': ['中元节'], '0815': ['中秋节'], '0909': ['重阳节'], '1208': ['腊八节'], '1223': ['小年'], '1229': ['除夕']}
 
-    _is_create_weekday = False #是否创建了某月第几个周末的节日
     _weekday_festival = {'0150': ['世界防治麻风病日'], '0520': ['母亲节'], '0530': ['全国助残日'], '0630': ['父亲节'], '0730': ['被奴役国家周'], '0932': ['国际和平日'], '0940': ['国际聋人节', '世界儿童日'], '0950': ['世界海事日'], '1011': ['国际住房日'], '1013': ['国际减轻自然灾害日(减灾日)'], '1144': ['感恩节']}
 
-    _weekday_festival_reserse = {} #这个字典用来记录 用节日名字做为key 实际日期做为value的 数据
-
-    _solar_term = {}
-    _terms_year = None
-    _weekday_festival_year = None
-    _dynamic_weekday_dates = set()
-    _dynamic_term_dates = set()
-
-    # _winter_solstice = {}
-    #
-    # _summer_solstice = {}
+    @classmethod
+    @lru_cache(maxsize=32)
+    def _weekday_festivals_for_year(cls, year: int) -> tuple[dict, dict]:
+        solar = {}
+        reverse = {}
+        for key, value in cls._weekday_festival.items():
+            month = int(key[:2])
+            weekday = int(key[3:])
+            occurrence = int(key[2])
+            first = datetime.date(year, month, 1).weekday() + 1
+            day = 1 + 7 - first + weekday + (occurrence - 1) * 7
+            if day > 30:
+                day -= 7
+            date_key = f"{month:02d}{day:02d}"
+            for name in value:
+                reverse[name] = date_key
+            solar[date_key] = value
+        return solar, reverse
 
     @classmethod
-    def lunar_Fstv(cls,lunar_month, lunar_day):
-        #农历节日
-        return festival_handle(Festival._lunar_festival,lunar_month,lunar_day)
-
-    #国历节日
-    @classmethod
-    def solar_Fstv(cls,solar_month, solar_day):
-        return festival_handle(Festival._solar_festival,solar_month,solar_day)
+    @lru_cache(maxsize=32)
+    def _terms_for_year(cls, year: int) -> tuple[dict, dict]:
+        solar_term = {}
+        solar_festival = {}
+        for item in jieqi().creat_year_jieqi(year):
+            comps = item["time"].split("-")
+            date_key = comps[1] + comps[2]
+            if item["name"] == "清明":
+                solar_festival[date_key] = ["清明节"]
+            solar_term[date_key] = [item["name"]]
+        return solar_term, solar_festival
 
     @classmethod
     def _create_weekday_festival(cls, year=None):
-
         year = year or datetime.date.today().year
-        if cls._is_create_weekday and cls._weekday_festival_year == year:
-            return
-        for date_key in cls._dynamic_weekday_dates:
-            cls._solar_festival.pop(date_key, None)
-        cls._dynamic_weekday_dates.clear()
-        cls._weekday_festival_reserse.clear()
-        cls._is_create_weekday = True
-        cls._weekday_festival_year = year
-
-        for key,value in cls._weekday_festival.items():
-            month = int(key[:2])
-            w = int(key[3:])
-            n = int(key[2])
-            first = datetime.date(year, month, 1).weekday() + 1#该月的第一天星期几
-            day = 1 + 7 - first + w + (n - 1) * 7
-            if day > 30: #  如果有计算错误 此处30需要改成当月天数
-                day = day - 7 #此处只减一个7，因为上面数据最大为5，而实际上每月最少有4个星期n，所以减1即可
-            month_str = "{:0>2d}".format(month)
-            day_str = "{:0>2d}".format(day)
-            date_str = month_str + day_str
-            for k in value:
-                cls._weekday_festival_reserse[k] = date_str
-            cls._solar_festival[date_str] = value
-            cls._dynamic_weekday_dates.add(date_str)
+        return cls._weekday_festivals_for_year(year)
 
     @classmethod
     def _create_terms(cls, year=None):
-        #计算节气 并且 把清明节放入节日中，获取夏至和冬至
         year = year or datetime.date.today().year
-        if Festival._terms_year == year:
-            return
-        for date_key in Festival._dynamic_term_dates:
-            Festival._solar_festival.pop(date_key, None)
-        Festival._dynamic_term_dates.clear()
-        Festival._solar_term = {}
-        Festival._terms_year = year
-        terms = jieqi().creat_year_jieqi(year)
-        for item in terms:
-            comps = item['time'].split('-')
-            if item['name'] == '清明':
-                Festival._solar_festival[comps[1]+comps[2]] = ['清明节']
-                Festival._dynamic_term_dates.add(comps[1]+comps[2])
-            Festival._solar_term[comps[1]+comps[2]] = [item['name']]
-    #24节气
+        return cls._terms_for_year(year)
+
     @classmethod
-    def solar_Term(cls,solar_month, solar_day):
-        return festival_handle(Festival._solar_term,solar_month,solar_day)
+    def lunar_Fstv(cls, lunar_month, lunar_day):
+        return festival_handle(cls._lunar_festival, lunar_month, lunar_day)
+
+    @classmethod
+    def solar_festival_list_for_year(cls, month, day, year):
+        key = f"{month:02d}{day:02d}"
+        weekday, _ = cls._weekday_festivals_for_year(year)
+        _, terms = cls._terms_for_year(year)
+        values = {**cls._BASE_SOLAR_FESTIVAL, **terms, **weekday}.get(key, [])
+        return list(values)
+
+    @classmethod
+    def solar_Fstv_for_year(cls, solar_month, solar_day, year):
+        values = cls.solar_festival_list_for_year(solar_month, solar_day, year)
+        return ",".join(values) if values else None
+
+    @classmethod
+    def solar_Fstv(cls, solar_month, solar_day):
+        return cls.solar_Fstv_for_year(
+            solar_month, solar_day, datetime.date.today().year
+        )
+
+    @classmethod
+    def solar_Term(cls, solar_month, solar_day, year=None):
+        year = year or datetime.date.today().year
+        terms, _ = cls._terms_for_year(year)
+        return festival_handle(terms, solar_month, solar_day)
 
 
 class Info():
@@ -389,20 +368,11 @@ class Info():
 class SolarDate():
 
     def __init__(self, now: datetime.datetime | None = None):
-        global solar_year
-        global solar_month
-        global solar_day
-        global solar_weekday
-
         t = now or datetime.datetime.now().astimezone().replace(tzinfo=None)
-        solar_year      = t.year
-        solar_month     = t.month
-        solar_day       = t.day
-        solar_weekday   = t.weekday()
-        self.year = solar_year
-        self.month = solar_month
-        self.day = solar_day
-        self.weekday = solar_weekday
+        self.year = t.year
+        self.month = t.month
+        self.day = t.day
+        self.weekday = t.weekday()
 
     def __str__(self):
         return 'LunarDate(%d, %d, %d, %d)' % (self.year, self.month, self.day, self.isLeapMonth)
@@ -410,22 +380,28 @@ class SolarDate():
 
 class CalendarToday:
 
-    _solar = None
-    _lunar = None
     def __init__(self, now: datetime.datetime | None = None):
-        # Keep the date on this instance.  LunarDate/lunar.py retains legacy
-        # module globals for compatibility, but holiday lookups also create
-        # LunarDate objects and would otherwise overwrite the sensor's date.
+        # Keep both calendar dates on this instance so parallel holiday lookups
+        # cannot change the sensor's date or event tables.
         self._solar = SolarDate(now)
         self._lunar = LunarDate.fromSolarDate(
             self._solar.year, self._solar.month, self._solar.day
         )
-        Festival._create_terms(self._solar.year)
-        Festival._create_weekday_festival(self._solar.year)
+        terms, term_festivals = Festival._terms_for_year(self._solar.year)
+        weekday_festivals, weekday_reverse = Festival._weekday_festivals_for_year(self._solar.year)
+        self._solar_festivals = {**Festival._BASE_SOLAR_FESTIVAL, **term_festivals, **weekday_festivals}
+        self._solar_terms = terms
+        self._weekday_festival_reverse = weekday_reverse
+
+    def solar_festival_list(self, month: int, day: int) -> list[str]:
+        return list(self._solar_festivals.get(f"{month:02d}{day:02d}", []))
+
+    def weekday_festival_date(self, name: str) -> str:
+        return self._weekday_festival_reverse[name]
 
     def _solar_festival(self):
         #公历节日
-        s = Festival.solar_Fstv(self._solar.month, self._solar.day)
+        s = festival_handle(self._solar_festivals, self._solar.month, self._solar.day)
         if s:
             return s
         return ''
@@ -443,7 +419,7 @@ class CalendarToday:
 
     def solar_Term(self):
         #今日节气
-        return Festival.solar_Term(self._solar.month, self._solar.day)
+        return festival_handle(self._solar_terms, self._solar.month, self._solar.day)
 
     def solar_date_description(self):#阳历时间
         #2000年01月01日
@@ -456,7 +432,6 @@ class CalendarToday:
 
     def solar_week_number_description(self):#周数  ChineseWord.week_num_str
         return "第"+ChineseWord.week_num_str(self.solar_week_number()) + "周"
-        #return "第"+str(datetime.datetime(int(solar_year), int(solar_month), int(solar_day)).isocalendar()[1]) + "周"
 
     def week_description(self):
         #星期几
@@ -505,8 +480,6 @@ class CalendarToday:
         today = LunarDate.fromSolarDate(today.year, today.month, today.day)
         return today.year - year + 1
 
-Festival._create_terms()
-Festival._create_weekday_festival()
 
 def main():
     cal = CalendarToday()

@@ -1,5 +1,5 @@
 # coding=utf-8
-"""中国节假日传感器 - 版本 0.3.2-pre"""
+"""中国节假日传感器。"""
 from __future__ import annotations
 
 import datetime
@@ -15,12 +15,13 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import event as evt
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_NAME, DOMAIN
+from .const import DEFAULT_NAME, DOMAIN, INTEGRATION_VERSION
 from .coordinator import ChineseHolidayCoordinator
 from . import holiday
 from . import lunar
@@ -92,7 +93,9 @@ async def async_setup_platform(
             "update_interval": config.get(CONF_UPDATE_INTERVAL, timedelta(hours=8)),
         },
     )
-    await coordinator.async_config_entry_first_refresh()
+    # YAML has no config entry. async_config_entry_first_refresh requires one
+    # since Home Assistant 2025.11 and would fail setup.
+    await coordinator.async_refresh()
     async_add_entities([ChineseHolidaySensor(coordinator)], True)
 
 
@@ -122,6 +125,38 @@ async def async_setup_entry(
 ) -> None:
     """Config entry 方式配置（UI 添加）。"""
     async_add_entities([ChineseHolidaySensor(entry.runtime_data)], True)
+
+
+
+def _annual_datetime(year: int, month: int, day: int, hour: int, minute: int, second: int) -> datetime.datetime:
+    """Build an annual timestamp, clamping invalid month-days to month end."""
+    while day > 0:
+        try:
+            return datetime.datetime(year, month, day, hour, minute, second)
+        except ValueError:
+            day -= 1
+    raise ValueError("invalid annual date")
+
+
+def _lunar_anniversary_date(year: int, month: int, day: int) -> datetime.date:
+    """Use the last day of a lunar month when day 30 does not exist."""
+    try:
+        return lunar.CalendarToday.lunar_to_solar(year, month, day)
+    except ValueError:
+        if day != 30:
+            raise
+        return lunar.CalendarToday.lunar_to_solar(year, month, 29)
+
+
+def _parse_calculate_age_datetime(value: Any) -> datetime.datetime | None:
+    """Accept a full timestamp or a date. Bad values stay out of the update."""
+    text_value = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(text_value, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
@@ -165,7 +200,7 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
         self._remove_update_listener = None
         self._remove_notify_listener = None
         self._now = dt_util.now()
-        self._last_notification_signature: tuple[str, str] | None = None
+        self._last_notification_signature: tuple[str, str, str] | None = None
         self.entity_id = config.get("entity_id") or generate_entity_id(
             "sensor.{}", self.client_name, hass=self._hass
         )
@@ -187,6 +222,17 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
     @property
     def name(self) -> str:
         return self._attr_name
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Attach the sensor to a device instead of leaving it orphaned."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._attr_unique_id or self.client_name)},
+            name=self.client_name,
+            manufacturer="studentLcc",
+            model="中国节假日日历",
+            sw_version=INTEGRATION_VERSION,
+        )
 
     @property
     def native_value(self) -> str | None:
@@ -228,8 +274,9 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
     def _setup_notify_listener(self) -> None:
         @callback
         def _listener(_):
+            scheduled = notify_d
             self._setup_notify_listener()
-            self._hass.async_create_task(self.async_notify())
+            self._hass.async_create_task(self.async_notify(scheduled))
 
         now = dt_util.now()
         notify_dates = []
@@ -282,7 +329,7 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
     # 通知脚本
     # ------------------------------------------------------------------
 
-    async def async_notify(self) -> None:
+    async def async_notify(self, scheduled: datetime.datetime | None = None) -> None:
         """调用 HA 脚本发送节日提醒。"""
         self._now = dt_util.now()
         if not self._script_name or not self._notify_principles:
@@ -304,7 +351,8 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
                 )
         if messages:
             message = ",".join(messages)
-            signature = (self._now.date().isoformat(), message)
+            slot = (scheduled or self._now).strftime("%H:%M:%S")
+            signature = (self._now.date().isoformat(), slot, message)
             if signature == self._last_notification_signature:
                 _LOGGER.debug("跳过重复节日通知：%s", message)
                 return
@@ -337,7 +385,7 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
                         fes_list = [name]
                         date_str = (
                             str(current_year)
-                            + lunar.Festival._weekday_festival_reserse[name]
+                            + self._lunar.weekday_festival_date(name)
                         )
                         fes_date = datetime.datetime.strptime(
                             date_str, "%Y%m%d"
@@ -390,47 +438,78 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
 
     def calculate_anniversary(self, count: int = 1) -> list[tuple]:
         anniversaries: dict[str, list] = {}
+        today = self._now.date()
         current_solar_year = self._lunar.solar()[0]
         current_lunar_year, current_lunar_month, current_lunar_day = self._lunar.lunar()
 
         for key, value in self._lunar_anniversary.items():
-            if len(key) == 8:
-                year, month, day = int(key[:4]), int(key[4:6]), int(key[6:])
-                age = lunar.CalendarToday.get_age_by_birth_lunar_to_solar(
-                    year, month, day, self._now.date()
+            raw = str(key)
+            if len(raw) == 8 and raw.isdigit():
+                year, month, day = int(raw[:4]), int(raw[4:6]), int(raw[6:])
+                birth_solar = _lunar_anniversary_date(year, month, day)
+                age = lunar.CalendarToday.get_age_by_birth_solar(
+                    birth_solar.year, birth_solar.month, birth_solar.day, today
                 ) + 1
-            else:
-                month, day = int(key[:2]), int(key[2:])
+            elif len(raw) == 4 and raw.isdigit():
+                month, day = int(raw[:2]), int(raw[2:])
                 age = -1
+            else:
+                _LOGGER.warning("忽略无效农历纪念日：%s", key)
+                continue
             y = current_lunar_year
-            if month < current_lunar_month:
+            if (month, day) < (current_lunar_month, current_lunar_day):
                 y += 1
-            elif month == current_lunar_month and day < current_lunar_day:
-                y += 1
-            solar_date = lunar.CalendarToday.lunar_to_solar(y, month, day)
+            try:
+                solar_date = _lunar_anniversary_date(y, month, day)
+            except (TypeError, ValueError):
+                _LOGGER.warning("忽略无法换算的农历纪念日：%s", key)
+                continue
+            if solar_date < today:
+                try:
+                    solar_date = _lunar_anniversary_date(y + 1, month, day)
+                except (TypeError, ValueError):
+                    _LOGGER.warning("忽略无法换算的农历纪念日：%s", key)
+                    continue
             date_str = solar_date.strftime("%Y%m%d")
             anniversaries.setdefault(date_str, []).append(
                 {"anniversary": self._anniversary_label(value, age), "solar": False}
             )
 
         for key, value in self._solar_anniversary.items():
-            if len(key) == 8:
-                year, month, day = int(key[:4]), int(key[4:6]), int(key[6:])
-                key = key[4:]
+            month_day = str(key)
+            age = -1
+            if len(month_day) == 8 and month_day.isdigit():
+                year, month, day = int(month_day[:4]), int(month_day[4:6]), int(month_day[6:])
+                month_day = month_day[4:]
                 age = lunar.CalendarToday.get_age_by_birth_solar(
-                    year, month, day, self._now.date()
+                    year, month, day, today
                 ) + 1
-            else:
-                age = -1
-            date_str = str(current_solar_year) + key
+            elif len(month_day) != 4 or not month_day.isdigit():
+                _LOGGER.warning("忽略无效公历纪念日：%s", key)
+                continue
+            try:
+                month, day = int(month_day[:2]), int(month_day[2:])
+                candidate = _annual_datetime(
+                    current_solar_year, month, day, 0, 0, 0
+                ).date()
+                if candidate < today:
+                    candidate = _annual_datetime(
+                        current_solar_year + 1, month, day, 0, 0, 0
+                    ).date()
+            except ValueError:
+                _LOGGER.warning("忽略无效公历纪念日：%s", key)
+                continue
+            date_str = candidate.strftime("%Y%m%d")
             anniversaries.setdefault(date_str, []).append(
                 {"anniversary": self._anniversary_label(value, age), "solar": True}
             )
 
-        today = self._now.date()
         results = []
         for key, annis in sorted(anniversaries.items()):
-            last_update = datetime.datetime.strptime(key, "%Y%m%d").date()
+            try:
+                last_update = datetime.datetime.strptime(key, "%Y%m%d").date()
+            except ValueError:
+                continue
             diff = (last_update - today).days
             if diff > 0 and len(results) < count:
                 results.append((key, diff, annis))
@@ -455,9 +534,19 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
         future_count = 0
 
         for item in self._calculate_age:
-            date = item[CONF_CALCULATE_AGE_DATE]
-            name = item[CONF_CALCULATE_AGE_NAME]
-            key = datetime.datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+            if not isinstance(item, dict):
+                _LOGGER.warning("忽略无效计时纪念日：%s", item)
+                continue
+            date = item.get(CONF_CALCULATE_AGE_DATE)
+            name = item.get(CONF_CALCULATE_AGE_NAME)
+            if not date or not name:
+                _LOGGER.warning("忽略缺少 date 或 name 的计时纪念日：%s", item)
+                continue
+            key = _parse_calculate_age_datetime(date)
+            if key is None:
+                _LOGGER.warning("忽略无法解析的计时纪念日日期：%s", date)
+                continue
+            date = key.strftime("%Y-%m-%d %H:%M:%S")
 
             if (now_day - key).total_seconds() > 0:
                 ts = int((now_day - key).total_seconds())
@@ -473,9 +562,13 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
                 past_count += 1
 
                 counter = 0
+                original_month, original_day = key.month, key.day
                 while (now_day - key).total_seconds() > 0:
-                    date = str(key.year + 1) + date[4:]
-                    key = datetime.datetime.strptime(date, "%Y-%m-%d %H:%M:%S")
+                    key = _annual_datetime(
+                        key.year + 1, original_month, original_day,
+                        key.hour, key.minute, key.second,
+                    )
+                    date = key.strftime("%Y-%m-%d %H:%M:%S")
                     counter += 1
                 name = name + " " + str(counter) + ("周岁" if "生日" in name else "周年")
 
@@ -521,10 +614,7 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
         # 懒加载：第一次 update 时初始化（此时已在 executor 线程，可以做阻塞 I/O）
         if self._holiday is None:
             self._holiday = holiday.Holiday(self._cache_path)
-        if self._lunar is None:
-            self._lunar = lunar.CalendarToday(self._now.replace(tzinfo=None))
-        else:
-            self._lunar = lunar.CalendarToday(self._now.replace(tzinfo=None))
+        self._lunar = lunar.CalendarToday(self._now.replace(tzinfo=None))
 
         # HA 2024+ SensorEntity：必须写 _attr_native_value，不能覆盖 state 属性
         self._attr_native_value = self._holiday.is_holiday_today()
@@ -588,17 +678,20 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
 
         self.calculate_age()
 
-        details = self._holiday.nearest_holiday_details(2, 0, 45)
+        details = self._holiday.nearest_holiday_details(2, 0, None)
         if details:
             self.attributes["holiday_info_details"] = details
             self.localizedAttributes["节假日放假详情结构化列表"] = details
             self.attributes["holiday_info_detail"] = details[0]
             self.localizedAttributes["节假日放假详情结构化"] = details[0]
 
-        info = self._holiday.nearest_holiday_info(0, 45)
+        info = self._holiday.nearest_holiday_info(0, None)
         if info:
             self.attributes["holiday_info"] = info
             self.localizedAttributes["节假日放假详情"] = info
 
+        # English keys stay at the top level so the card still renders when
+        # show_detail is off. `data` remains an extra copy for older cards.
+        self.localizedAttributes.update(self.attributes)
         if self._show_detail:
-            self.localizedAttributes["data"] = self.attributes
+            self.localizedAttributes["data"] = dict(self.attributes)

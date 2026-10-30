@@ -1,15 +1,19 @@
 """Chinese Holiday integration."""
 from __future__ import annotations
 
+import logging
+
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers import config_validation as cv, service
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, PLATFORMS, SERVICE_GET
 from .coordinator import ChineseHolidayCoordinator
 
+_LOGGER = logging.getLogger(__name__)
 ENTITY_SERVICE_SCHEMA = {vol.Optional("force", default=True): cv.boolean}
 
 
@@ -27,8 +31,29 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+def _migrate_sensor_unique_id(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Preserve the existing entity_id while moving to a per-entry unique_id."""
+    registry = er.async_get(hass)
+    old_unique_id = f"{DOMAIN}_sensor"
+    new_unique_id = f"{DOMAIN}_{entry.entry_id}"
+    if old_unique_id == new_unique_id:
+        return
+    for entity in registry.entities.values():
+        if (
+            entity.platform == DOMAIN
+            and entity.unique_id == old_unique_id
+            and entity.config_entry_id == entry.entry_id
+        ):
+            try:
+                registry.async_update_entity(entity.entity_id, new_unique_id=new_unique_id)
+            except ValueError:
+                _LOGGER.exception("无法迁移传感器实体 ID：%s", entity.entity_id)
+            return
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Chinese Holiday from a config entry."""
+    _migrate_sensor_unique_id(hass, entry)
     coordinator = ChineseHolidayCoordinator.from_config_entry(hass, entry)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator

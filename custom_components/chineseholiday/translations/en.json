@@ -30,6 +30,9 @@
     },
     "abort": {
       "already_configured": "Chinese Holiday is already configured"
+    },
+    "error": {
+      "invalid_calculate_age": "Each timer memorial needs a name and a date in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"
     }
   },
   "options": {
@@ -57,6 +60,9 @@
           "notify_principles": "Notification rules"
         }
       }
+    },
+    "error": {
+      "invalid_calculate_age": "Each timer memorial needs a name and a date in YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format"
     }
   },
   "services": {
