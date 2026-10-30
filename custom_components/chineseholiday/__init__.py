@@ -10,11 +10,18 @@ from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers import config_validation as cv, service
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN, PLATFORMS, SERVICE_GET
+from .const import DOMAIN, PLATFORMS, SERVICE_GET, SERVICE_SET_MEMORIAL
 from .coordinator import ChineseHolidayCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 ENTITY_SERVICE_SCHEMA = {vol.Optional("force", default=True): cv.boolean}
+MEMORIAL_SERVICE_SCHEMA = {
+    vol.Required("name"): cv.string,
+    vol.Required("calendar"): vol.In(["solar", "lunar"]),
+    vol.Required("date"): cv.string,
+    vol.Optional("mode", default="yearly_count"): vol.In(["yearly", "yearly_count", "timer"]),
+    vol.Optional("operation", default="add"): vol.In(["add", "delete"]),
+}
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -26,6 +33,15 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         entity_domain="sensor",
         schema=ENTITY_SERVICE_SCHEMA,
         func="async_get_holidays",
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    service.async_register_platform_entity_service(
+        hass,
+        DOMAIN,
+        SERVICE_SET_MEMORIAL,
+        entity_domain="sensor",
+        schema=MEMORIAL_SERVICE_SCHEMA,
+        func="async_set_memorial",
         supports_response=SupportsResponse.OPTIONAL,
     )
     return True

@@ -75,6 +75,32 @@
           "description": "开启后忽略 15 天缓存，马上重新请求。默认开启。"
         }
       }
+    },
+    "set_memorial": {
+      "name": "配置纪念日",
+      "description": "把公历、农历或精确计时纪念日写入集成配置，卡片和传感器使用同一份数据。",
+      "fields": {
+        "name": {
+          "name": "名称",
+          "description": "纪念日名称。名称包含“生日”时按周岁显示。"
+        },
+        "calendar": {
+          "name": "历法",
+          "description": "solar 表示公历，lunar 表示农历。"
+        },
+        "date": {
+          "name": "日期",
+          "description": "公历用 YYYY-MM-DD 或 MM-DD；农历用 L12-18，闰月用 LL5-15。精确计时用 YYYY-MM-DD HH:MM:SS。"
+        },
+        "mode": {
+          "name": "重复方式",
+          "description": "yearly_count 计算周岁或周年，yearly 只按每年重复，timer 为精确计时。"
+        },
+        "operation": {
+          "name": "操作",
+          "description": "add 添加或更新，delete 删除。默认 add。"
+        }
+      }
     }
   }
 }

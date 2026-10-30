@@ -75,6 +75,32 @@
           "description": "When enabled, ignore the 15-day cache and request the data immediately. Enabled by default."
         }
       }
+    },
+    "set_memorial": {
+      "name": "Configure memorial",
+      "description": "Save a solar, lunar, or elapsed-time memorial into the integration. The card and sensor share this configuration.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "Memorial name. Names containing 生日 are shown as ages."
+        },
+        "calendar": {
+          "name": "Calendar",
+          "description": "solar or lunar."
+        },
+        "date": {
+          "name": "Date",
+          "description": "Solar YYYY-MM-DD or MM-DD. Lunar L12-18, leap month LL5-15. Timer YYYY-MM-DD HH:MM:SS."
+        },
+        "mode": {
+          "name": "Repeat",
+          "description": "yearly_count, yearly, or timer."
+        },
+        "operation": {
+          "name": "Operation",
+          "description": "add or delete. Defaults to add."
+        }
+      }
     }
   }
 }

@@ -23,6 +23,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_NAME, DOMAIN, INTEGRATION_VERSION
 from .coordinator import ChineseHolidayCoordinator
+from .memorials import apply_memorial, export_memorials, parse_lunar_key
 from . import holiday
 from . import lunar
 
@@ -138,14 +139,14 @@ def _annual_datetime(year: int, month: int, day: int, hour: int, minute: int, se
     raise ValueError("invalid annual date")
 
 
-def _lunar_anniversary_date(year: int, month: int, day: int) -> datetime.date:
+def _lunar_anniversary_date(year: int, month: int, day: int, leap: bool = False) -> datetime.date:
     """Use the last day of a lunar month when day 30 does not exist."""
     try:
-        return lunar.CalendarToday.lunar_to_solar(year, month, day)
+        return lunar.CalendarToday.lunar_to_solar(year, month, day, leap)
     except ValueError:
-        if day != 30:
+        if day != 30 or leap:
             raise
-        return lunar.CalendarToday.lunar_to_solar(year, month, 29)
+        return lunar.CalendarToday.lunar_to_solar(year, month, 29, leap)
 
 
 def _parse_calculate_age_datetime(value: Any) -> datetime.datetime | None:
@@ -325,6 +326,51 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
         """Fetch holiday data for this sensor's coordinator."""
         return await self.coordinator.async_get_holidays(force)
 
+    async def async_set_memorial(
+        self,
+        name: str,
+        calendar: str,
+        date: str,
+        mode: str = "yearly_count",
+        operation: str = "add",
+    ) -> dict[str, Any]:
+        """Add or delete a memorial in the integration configuration."""
+        from homeassistant.exceptions import HomeAssistantError
+
+        entry = self.coordinator.config_entry
+        if entry is None:
+            raise HomeAssistantError("这个传感器来自 YAML，请直接修改 configuration.yaml")
+        data = {**entry.data, **entry.options}
+        solar = dict(data.get("solar_anniversary") or {})
+        lunar = dict(data.get("lunar_anniversary") or {})
+        timers = [
+            dict(item) for item in (data.get("calculate_age") or [])
+            if isinstance(item, dict)
+        ]
+        try:
+            apply_memorial(
+                solar, lunar, timers,
+                name=name, calendar=calendar, date=date,
+                mode=mode, operation=operation,
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        updated = {
+            **data,
+            "solar_anniversary": solar,
+            "lunar_anniversary": lunar,
+            "calculate_age": timers,
+        }
+        self.hass.config_entries.async_update_entry(entry, data=updated, options={})
+        self.coordinator.config["solar_anniversary"] = solar
+        self.coordinator.config["lunar_anniversary"] = lunar
+        self.coordinator.config["calculate_age"] = timers
+        self._solar_anniversary = solar
+        self._lunar_anniversary = lunar
+        self._calculate_age = timers
+        await self.coordinator.async_request_refresh()
+        return {"memorials": export_memorials(solar, lunar, timers)}
+
     # ------------------------------------------------------------------
     # 通知脚本
     # ------------------------------------------------------------------
@@ -446,33 +492,33 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
         current_lunar_year, current_lunar_month, current_lunar_day = self._lunar.lunar()
 
         for key, value in self._lunar_anniversary.items():
-            raw = str(key)
-            if len(raw) == 8 and raw.isdigit():
-                year, month, day = int(raw[:4]), int(raw[4:6]), int(raw[6:])
-                birth_solar = _lunar_anniversary_date(year, month, day)
+            try:
+                year, month, day, leap = parse_lunar_key(key)
+            except ValueError:
+                _LOGGER.warning("忽略无效农历纪念日：%s", key)
+                continue
+            if year is not None:
+                birth_solar = _lunar_anniversary_date(year, month, day, leap)
                 age = lunar.CalendarToday.get_age_by_birth_solar(
                     birth_solar.year, birth_solar.month, birth_solar.day, today
                 ) + 1
-            elif len(raw) == 4 and raw.isdigit():
-                month, day = int(raw[:2]), int(raw[2:])
-                age = -1
             else:
-                _LOGGER.warning("忽略无效农历纪念日：%s", key)
-                continue
+                age = -1
             y = current_lunar_year
-            if (month, day) < (current_lunar_month, current_lunar_day):
+            if not leap and (month, day) < (current_lunar_month, current_lunar_day):
                 y += 1
-            try:
-                solar_date = _lunar_anniversary_date(y, month, day)
-            except (TypeError, ValueError):
+            solar_date = None
+            for offset in range(24):
+                try:
+                    candidate = _lunar_anniversary_date(y + offset, month, day, leap)
+                except (TypeError, ValueError):
+                    continue
+                if candidate >= today:
+                    solar_date = candidate
+                    break
+            if solar_date is None:
                 _LOGGER.warning("忽略无法换算的农历纪念日：%s", key)
                 continue
-            if solar_date < today:
-                try:
-                    solar_date = _lunar_anniversary_date(y + 1, month, day)
-                except (TypeError, ValueError):
-                    _LOGGER.warning("忽略无法换算的农历纪念日：%s", key)
-                    continue
             date_str = solar_date.strftime("%Y%m%d")
             anniversaries.setdefault(date_str, []).append(
                 {"anniversary": self._anniversary_label(value, age), "solar": False}
@@ -693,6 +739,9 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
             self.attributes["holiday_info"] = info
             self.localizedAttributes["节假日放假详情"] = info
 
+        self.attributes["configured_memorials"] = export_memorials(
+            self._solar_anniversary, self._lunar_anniversary, self._calculate_age
+        )
         # English keys stay at the top level so the card still renders when
         # show_detail is off. `data` remains an extra copy for older cards.
         self.localizedAttributes.update(self.attributes)

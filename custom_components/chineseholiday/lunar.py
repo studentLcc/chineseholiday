@@ -453,8 +453,8 @@ class CalendarToday:
         return self._lunar.year, self._lunar.month, self._lunar.day
 
     @classmethod
-    def lunar_to_solar(cls,year,month,day):
-        l = LunarDate(year,month,day,False)
+    def lunar_to_solar(cls, year, month, day, is_leap=False):
+        l = LunarDate(year, month, day, bool(is_leap))
         return l.toSolarDate()
 
 
