@@ -403,7 +403,10 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
                             anniversary_names = self._solar_anniversary.get(date_key, [])
                             if len(date_key) == 8 and not anniversary_names:
                                 anniversary_names = self._solar_anniversary.get(lookup_key, [])
-                            fes_list = list(lunar.Festival._solar_festival.get(lookup_key, []))
+                            month, day = int(lookup_key[:2]), int(lookup_key[2:])
+                            fes_list = lunar.Festival.solar_festival_list_for_year(
+                                month, day, year
+                            )
                             fes_list += anniversary_names
                         else:
                             year = int(date_key[:4]) if len(date_key) == 8 else current_year

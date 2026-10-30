@@ -45,6 +45,12 @@ class CalendarTodayTests(unittest.TestCase):
         self.assertIn("母亲节", calendar_2027.festival_description())
         self.assertIn("母亲节", calendar_2026.festival_description())
 
+    def test_year_specific_solar_festival_lookup_includes_qingming(self) -> None:
+        self.assertEqual(
+            lunar.Festival.solar_festival_list_for_year(4, 5, 2026),
+            ["清明节"],
+        )
+
     def test_solar_age_uses_the_sensor_date(self) -> None:
         today = datetime.date(2026, 10, 29)
 
