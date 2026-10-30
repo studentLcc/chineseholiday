@@ -704,16 +704,18 @@ class ChineseHolidaySensor(CoordinatorEntity, SensorEntity):
             if i == 0:
                 self.attributes["nearest_anniversary"] = s
                 self.localizedAttributes["最近的纪念日"] = s
-                self.attributes["nearest_anniversary_date"] = key
-                self.localizedAttributes["最近的纪念日日期"] = key
+                anniversary_date = f"{key[0:4]}-{key[4:6]}-{key[6:8]}"
+                self.attributes["nearest_anniversary_date"] = anniversary_date
+                self.localizedAttributes["最近的纪念日日期"] = anniversary_date
                 self.attributes["nearest_anniversary_days"] = days
                 self.localizedAttributes["最近的纪念日还有"] = f"{days}天"
             else:
+                anniversary_date = f"{key[0:4]}-{key[4:6]}-{key[6:8]}"
                 self.attributes["next_anniversaries"].append(
-                    {"date": key, "name": s, "days": days}
+                    {"date": anniversary_date, "name": s, "days": days}
                 )
                 self.localizedAttributes["接下来的纪念日"].append(
-                    f"距离纪念日 {s}-{key} 还有 {days} 天 "
+                    f"距离纪念日 {s}-{anniversary_date} 还有 {days} 天 "
                 )
 
         nearest = self.nearest_holiday()

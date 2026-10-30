@@ -90,7 +90,7 @@ class HolidayRuleTests(unittest.TestCase):
         self.assertNotIn(datetime.date(2027, 5, 2), days)
 
     def test_explicit_workday_beats_the_statutory_fallback(self) -> None:
-        self.holiday._holiday_json["2027"] = {"0101": "0"}
+        self.holiday._holiday_json["2027"] = {"0101": "0", "0102": "2", "0103": "2"}
         self.holiday._known_holiday_cache = {}
         self.assertEqual(
             self.holiday.is_holiday_status(datetime.datetime(2027, 1, 1)),
@@ -98,6 +98,18 @@ class HolidayRuleTests(unittest.TestCase):
         )
         names = self.holiday.getHoliday()
         self.assertNotIn(datetime.date(2027, 1, 1), names)
+
+    def test_unpublished_new_year_survives_an_ordinary_workday_mark(self) -> None:
+        self.holiday._holiday_json["2027"] = {"0101": "0", "0206": "2", "0207": "2"}
+        self.holiday._known_holiday_cache = {}
+        self.assertEqual(
+            self.holiday.is_holiday_status(datetime.datetime(2027, 1, 1)),
+            2,
+        )
+        names = self.holiday.getHoliday()
+        self.assertEqual(names[datetime.date(2027, 1, 1)], "元旦")
+        future = sorted(day for day in names if day >= datetime.date(2026, 10, 29))
+        self.assertEqual(future[0].isoformat(), "2027-01-01")
 
     def test_weekend_rest_does_not_hide_statutory_holiday_fallback(self) -> None:
         self.holiday._holiday_json["2027"] = {"0101": "1"}

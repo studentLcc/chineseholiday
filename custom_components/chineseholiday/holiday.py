@@ -290,7 +290,7 @@ class Holiday:
                 stored = None
         # Type 0 means an explicit workday. A routine rest day (type 1) does
         # not replace a statutory date; fixed-date fallback keeps it type 2.
-        if stored == 0:
+        if stored == 0 and self._explicit_workday_overrides(holiday_date):
             return 0
         if stored == 2 or holiday_date in known:
             return 2
@@ -349,7 +349,7 @@ class Holiday:
                 continue
             year_dict = self._holiday_json.get(str(known_date.year), {})
             mmdd = f"{known_date.month:02d}{known_date.day:02d}"
-            if isinstance(year_dict, dict) and str(year_dict.get(mmdd)) == "0":
+            if self._explicit_workday_overrides(known_date):
                 continue
             seeds.append(datetime_class(known_date.year, known_date.month, known_date.day))
             seen_days.add(known_date)
@@ -710,10 +710,36 @@ class Holiday:
         for date, name in self._known_holiday_dates(years).items():
             year_dict = self._holiday_json.get(str(date.year), {})
             mmdd = f"{date.month:02d}{date.day:02d}"
-            if isinstance(year_dict, dict) and str(year_dict.get(mmdd)) == "0":
+            if self._explicit_workday_overrides(date):
                 continue
             results.setdefault(date, name)
         return self._apply_period_names(results)
+
+    def _explicit_workday_overrides(self, date: datetime.date) -> bool:
+        """Return whether cached type 0 should replace one statutory date.
+
+        Before the official notice, the API marks an ordinary weekday such as
+        January 1 as type 0. That is not a makeup workday. Once a statutory
+        day is announced within ten days, an explicit type 0 belongs to the
+        published arrangement and stays a workday.
+        """
+        year_dict = self._holiday_json.get(str(date.year), {})
+        if not isinstance(year_dict, dict):
+            return False
+        mmdd = f"{date.month:02d}{date.day:02d}"
+        if str(year_dict.get(mmdd)) != "0":
+            return False
+        for key, value in year_dict.items():
+            text = str(key)
+            try:
+                if int(value) != 2 or len(text) != 4 or not text.isdigit():
+                    continue
+                announced = datetime.date(date.year, int(text[:2]), int(text[2:]))
+            except (TypeError, ValueError):
+                continue
+            if abs((announced - date).days) <= 10:
+                return True
+        return False
 
     def _apply_period_names(self, results: dict) -> dict:
         """Name unnamed days inside a continuous holiday after the named day."""
