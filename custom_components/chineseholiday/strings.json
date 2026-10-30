@@ -72,8 +72,7 @@
       "fields": {
         "force": {
           "name": "忽略缓存",
-          "description": "开启后忽略 15 天缓存，马上重新请求。默认开启。",
-          "example": true
+          "description": "开启后忽略 15 天缓存，马上重新请求。默认开启。"
         }
       }
     }

@@ -72,8 +72,7 @@
       "fields": {
         "force": {
           "name": "Ignore cache",
-          "description": "When enabled, ignore the 15-day cache and request the data immediately. Enabled by default.",
-          "example": true
+          "description": "When enabled, ignore the 15-day cache and request the data immediately. Enabled by default."
         }
       }
     }
