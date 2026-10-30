@@ -55,7 +55,7 @@ UI 中显示的是中文字段名，底层仍然对应原来的 YAML 键：
 ```yaml
 resources:
   - type: module
-    url: /hacsfiles/chineseholiday_card/dist/ch_calendar-card.js
+    url: /hacsfiles/chineseholiday_card/ch_calendar-card.js
 ```
 
 3. 添加卡片：
